@@ -1,0 +1,70 @@
+import asyncio
+import logging
+import re
+from src.models import Listing
+from src.scrapers.base import get_browser_context
+
+logger = logging.getLogger(__name__)
+
+SEARCH_URL = (
+    "https://www.olx.in/chennai_g4058979/q-1-bhk-chromepet"
+    "?filter=price_max_1500000"
+)
+
+_ID_PATTERN = re.compile(r"ID(\d+)\.html$")
+
+
+def extract_id(url: str) -> str:
+    match = _ID_PATTERN.search(url)
+    return match.group(1) if match else url.split("/")[-1]
+
+
+def parse_price(text: str) -> int | None:
+    digits = re.sub(r"[^\d]", "", text)
+    return int(digits) if digits else None
+
+
+async def _scrape_async() -> list[Listing]:
+    listings = []
+    async with get_browser_context() as ctx:
+        page = await ctx.new_page()
+        try:
+            await page.goto(SEARCH_URL, wait_until="networkidle", timeout=30000)
+            cards = await page.query_selector_all("li[data-aut-id='itemBox'], [class*='_2tW1I']")
+            for card in cards:
+                try:
+                    url_el = await card.query_selector("a")
+                    if not url_el:
+                        continue
+                    url = await url_el.get_attribute("href")
+                    if not url.startswith("http"):
+                        url = "https://www.olx.in" + url
+                    listing_id = extract_id(url)
+
+                    title_el = await card.query_selector("[data-aut-id='itemTitle'], span[class*='_2poBI']")
+                    title = (await title_el.inner_text()).strip() if title_el else "1 BHK"
+
+                    price_el = await card.query_selector("[data-aut-id='itemPrice'], span[class*='_89yzn']")
+                    price = parse_price(await price_el.inner_text()) if price_el else None
+                    if price is None:
+                        continue
+
+                    addr_el = await card.query_selector("span[class*='tjgMj']")
+                    address = (await addr_el.inner_text()).strip() if addr_el else "Chromepet, Chennai"
+
+                    img_els = await card.query_selector_all("img[src]")
+                    images = [await i.get_attribute("src") for i in img_els[:3] if await i.get_attribute("src")]
+
+                    listings.append(Listing(
+                        id=listing_id, source="olx", title=title,
+                        address=address, price=price, url=url, images=images,
+                    ))
+                except Exception:
+                    logger.exception("Error parsing OLX card")
+        finally:
+            await page.close()
+    return listings
+
+
+def scrape() -> list[Listing]:
+    return asyncio.run(_scrape_async())
