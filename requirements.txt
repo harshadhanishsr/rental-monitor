@@ -1,0 +1,8 @@
+playwright==1.43.0
+APScheduler==3.10.4
+geopy==2.4.1
+haversine==2.8.1
+twilio==9.0.5
+python-dotenv==1.0.1
+pytest==8.1.1
+pytest-mock==3.14.0
