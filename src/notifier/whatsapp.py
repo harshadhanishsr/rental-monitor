@@ -45,26 +45,15 @@ def format_message(listing: Listing, zone: str, distance_km: float | None) -> st
 
 
 def send_alert(listing: Listing, zone: str, distance_km: float | None) -> str:
-    """Send WhatsApp alert text. Returns Twilio message SID on success.
-
-    Images are sent best-effort via send_images(); call that separately
-    after send_alert() if you want to forward listing photos.
-    """
+    """Send WhatsApp alert. Returns Twilio message SID on success."""
     client = _get_client()
     body = format_message(listing, zone, distance_km)
     from_number = os.environ["TWILIO_WHATSAPP_FROM"]
     to_number = os.environ["WHATSAPP_TO"]
 
     msg = client.messages.create(body=body, from_=from_number, to=to_number)
-    return msg.sid
 
-
-def send_images(listing: Listing) -> None:
-    """Send listing images best-effort over WhatsApp. Logs but never raises."""
-    client = _get_client()
-    from_number = os.environ["TWILIO_WHATSAPP_FROM"]
-    to_number = os.environ["WHATSAPP_TO"]
-
+    # Send images best-effort — failures are logged but never raise
     for image_url in listing.images[:3]:
         try:
             client.messages.create(
@@ -74,6 +63,8 @@ def send_images(listing: Listing) -> None:
             )
         except Exception:
             logger.warning("Failed to send image %s for listing %s", image_url, listing.id)
+
+    return msg.sid
 
 
 def health_check() -> bool:

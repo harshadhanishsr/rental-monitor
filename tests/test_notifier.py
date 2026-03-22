@@ -56,7 +56,7 @@ def test_send_alert_calls_twilio(monkeypatch):
         sid = send_alert(make_listing(), "PREFERRED", 3.2)
 
     assert sid == "SMtest123"
-    mock_client.messages.create.assert_called_once()
+    mock_client.messages.create.assert_called()
 
 def test_health_check_returns_true_on_success(monkeypatch):
     monkeypatch.setenv("TWILIO_ACCOUNT_SID", "ACtest")
