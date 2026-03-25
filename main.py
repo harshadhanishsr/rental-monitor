@@ -1,8 +1,7 @@
 import logging
 import os
-import sqlite3
+import time
 from dotenv import load_dotenv
-from apscheduler.schedulers.blocking import BlockingScheduler
 from src.db import init_db, get_connection
 from src.notifier.whatsapp import health_check
 from src.scheduler import run_cycle
@@ -18,6 +17,7 @@ logger = logging.getLogger(__name__)
 DB_PATH = os.environ.get("DB_PATH", "/app/data/rental_monitor.db")
 OFFICE_LAT = float(os.environ.get("OFFICE_LAT", "12.9698"))
 OFFICE_LNG = float(os.environ.get("OFFICE_LNG", "80.1409"))
+INTERVAL_SECONDS = int(os.environ.get("INTERVAL_SECONDS", "3600"))
 
 
 def main():
@@ -29,26 +29,21 @@ def main():
     if not ok:
         logger.warning(
             "Startup health-check FAILED. Twilio sandbox may have expired. "
-            "Re-send the join message from your phone, then restart the container. "
-            "Skipping first scrape cycle — will retry in 1 hour."
+            "Re-send the join message from your phone, then restart the container."
         )
-
-    scheduler = BlockingScheduler()
-    scheduler.add_job(
-        func=lambda: run_cycle(conn, OFFICE_LAT, OFFICE_LNG),
-        trigger="interval",
-        hours=1,
-        max_instances=1,
-        id="rental_monitor",
-        name="Rental Monitor Hourly Run",
-    )
 
     if ok:
         logger.info("Running first cycle immediately...")
         run_cycle(conn, OFFICE_LAT, OFFICE_LNG)
 
-    logger.info("Scheduler started. Checking every hour.")
-    scheduler.start()
+    logger.info("Scheduler started. Checking every %d seconds.", INTERVAL_SECONDS)
+    while True:
+        time.sleep(INTERVAL_SECONDS)
+        logger.info("Starting scheduled cycle...")
+        try:
+            run_cycle(conn, OFFICE_LAT, OFFICE_LNG)
+        except Exception:
+            logger.exception("Unhandled error in scheduled cycle — will retry next interval")
 
 
 if __name__ == "__main__":

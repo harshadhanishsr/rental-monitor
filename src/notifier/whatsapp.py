@@ -3,6 +3,7 @@ import os
 from datetime import datetime, timezone
 from twilio.rest import Client
 from src.models import Listing
+from src.filters.distance_filter import is_priority_locality
 
 logger = logging.getLogger(__name__)
 
@@ -20,13 +21,16 @@ def format_message(listing: Listing, zone: str, distance_km: float | None) -> st
     else:
         header = f"NEW 1BHK — {zone}"
 
+    # Star listings in known priority localities near office
+    priority_tag = " ⭐ PRIORITY AREA" if is_priority_locality(listing.address) else ""
+
     broker_line = "No broker" if "nobroker" in listing.source.lower() else "Check for broker"
-    bachelor_line = "✅ Bachelors allowed" if listing.bachelors_allowed else "ℹ️ Occupancy unspecified"
+    bachelor_line = "Bachelors OK" if listing.bachelors_allowed else "Occupancy unspecified"
 
     lines = [
         header,
         "",
-        f"📍 {listing.address}",
+        f"📍 {listing.address}{priority_tag}",
         f"💰 ₹{listing.price:,}/month | {listing.furnishing.title()}",
         f"{bachelor_line} | {broker_line}",
     ]
@@ -35,11 +39,16 @@ def format_message(listing: Listing, zone: str, distance_km: float | None) -> st
         review = f' — "{listing.review_snippet}"' if listing.review_snippet else ""
         lines.append(f"⭐ {listing.rating}/5{review}")
 
+    # Google Maps link when we have precise coordinates
+    if listing.lat is not None and listing.lng is not None:
+        maps_url = f"https://maps.google.com/?q={listing.lat},{listing.lng}"
+        lines.append(f"🗺 Maps: {maps_url}")
+
     lines += [
         f"🌐 Source: {listing.source.title()}",
         f"🔗 {listing.url}",
         "",
-        f"Found at: {datetime.now(timezone.utc).strftime('%H:%M, %d %b %Y')} UTC",
+        f"Found: {datetime.now(timezone.utc).strftime('%H:%M, %d %b %Y')} UTC",
     ]
     return "\n".join(lines)
 
