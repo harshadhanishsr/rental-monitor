@@ -1,112 +1,256 @@
-import asyncio
+"""
+MagicBricks scraper — requests-based with JSON extraction.
+Tries __NEXT_DATA__ or window.__INITIAL_STATE__ JSON, then falls back to HTML parsing.
+"""
+import json
 import logging
 import re
-from urllib.parse import urlparse, parse_qs
+import time
+import requests
 from src.models import Listing
-from src.scrapers.base import get_browser_context, new_stealth_page
 
 logger = logging.getLogger(__name__)
 
-# MagicBricks: multiple areas near Chromepet office
-SEARCH_URLS = [
-    "https://www.magicbricks.com/property-for-rent/residential-rent/flats-in-Chromepet/mc=Chennai?bedroom=1BHK&maxBudget=15000",
-    "https://www.magicbricks.com/property-for-rent/residential-rent/flats-in-Pallavaram/mc=Chennai?bedroom=1BHK&maxBudget=15000",
-    "https://www.magicbricks.com/property-for-rent/residential-rent/flats-in-Tambaram/mc=Chennai?bedroom=1BHK&maxBudget=15000",
-    "https://www.magicbricks.com/property-for-rent/residential-rent/flats-in-Nanganallur/mc=Chennai?bedroom=1BHK&maxBudget=15000",
+SEARCH_AREAS = [
+    ("Chromepet", "CHENN4320"),
+    ("Pallavaram", "CHENN4330"),
+    ("Tambaram", "CHENN4340"),
+    ("Nanganallur", "CHENN4350"),
 ]
 
-CARD_SELECTOR = ".mb-srp__card, [class*='mb-srp__card'], [data-id]"
+# MagicBricks JSON search API (discovered via network inspection)
+MB_API_URL = "https://www.magicbricks.com/mbsrp/propertySearch.html"
+MB_PAGE_URL = (
+    "https://www.magicbricks.com/property-for-rent/residential-rent/"
+    "flats-in-{area}/mc=Chennai?bedroom=1BHK&maxBudget=15000"
+)
+
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/122.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Referer": "https://www.magicbricks.com/",
+    "Connection": "keep-alive",
+}
+
+_API_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/122.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.magicbricks.com/",
+    "X-Requested-With": "XMLHttpRequest",
+}
+
+_NEXT_DATA_RE = re.compile(
+    r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>', re.DOTALL
+)
+_INITIAL_STATE_RE = re.compile(
+    r'window\.__INITIAL_STATE__\s*=\s*({.*?});\s*(?:</script>|window\.)', re.DOTALL
+)
+_PRICE_RE = re.compile(r"(?:₹|Rs\.?|INR)?\s*([\d,]+)\s*(?:/month|pm|per month)?", re.IGNORECASE)
 
 
-def extract_id(url: str) -> str:
-    parsed = urlparse(url)
-    qs = parse_qs(parsed.query)
-    if "propertyId" in qs:
-        return qs["propertyId"][0]
-    return url.rstrip("/").split("/")[-1]
+def _parse_price(text: str) -> int | None:
+    text = str(text).replace(",", "")
+    m = re.search(r"\d{4,}", text)
+    return int(m.group()) if m else None
 
 
-def parse_price(text: str) -> int | None:
-    digits = re.sub(r"[^\d]", "", text)
-    return int(digits) if digits else None
-
-
-async def _scrape_url(ctx, url: str) -> list[Listing]:
-    listings = []
-    area = url.split("flats-in-")[1].split("/")[0] if "flats-in-" in url else "?"
-    page = await new_stealth_page(ctx)
+def _try_api(area: str, area_id: str) -> list[Listing]:
+    """Try MagicBricks JSON search API."""
+    params = {
+        "editSearch": "Y",
+        "category": "S",
+        "proptype": "flats",
+        "bedroom": "1BHK",
+        "city": "Chennai",
+        "locality": area,
+        "localityIds": area_id,
+        "rentBudgetMin": "0",
+        "rentBudgetMax": "15000",
+        "offset": "0",
+        "pageSize": "30",
+    }
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        resp = requests.get(MB_API_URL, params=params, headers=_API_HEADERS, timeout=20)
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+    except Exception:
+        return []
+
+    props = None
+    for path in [["resultList"], ["propertyList"], ["data", "propertyList"]]:
+        obj = data
         try:
-            await page.wait_for_selector(CARD_SELECTOR, timeout=15000)
+            for key in path:
+                obj = obj[key]
+            if isinstance(obj, list) and obj:
+                props = obj
+                break
+        except (KeyError, TypeError):
+            pass
+
+    if not props:
+        return []
+
+    listings = []
+    for prop in props:
+        try:
+            pid = str(prop.get("propId") or prop.get("id") or "")
+            if not pid:
+                continue
+            price = prop.get("priceDisplay") or prop.get("price") or prop.get("rent") or 0
+            if isinstance(price, str):
+                price = _parse_price(price) or 0
+            price = int(price)
+            if not price or price > 20000:
+                continue
+
+            title = prop.get("heading") or prop.get("title") or f"1 BHK, {area}"
+            locality = prop.get("localityTitle") or prop.get("locality") or area
+            address = f"{locality}, Chennai"
+            url = prop.get("propUrl") or f"https://www.magicbricks.com/propertyDetails/{pid}.html"
+            if not url.startswith("http"):
+                url = "https://www.magicbricks.com" + url
+
+            listings.append(Listing(
+                id=f"mb_{pid}",
+                source="magicbricks",
+                title=title,
+                address=address,
+                price=price,
+                url=url,
+            ))
         except Exception:
-            await page.wait_for_timeout(5000)
-
-        cards = await page.query_selector_all(CARD_SELECTOR)
-        logger.info("MagicBricks [%s]: found %d cards", area, len(cards))
-
-        for card in cards:
-            try:
-                url_el = await card.query_selector("a")
-                if not url_el:
-                    continue
-                href = await url_el.get_attribute("href") or ""
-                if not href.startswith("http"):
-                    href = "https://www.magicbricks.com" + href
-                listing_id = extract_id(href)
-
-                title_el = await card.query_selector(
-                    ".mb-srp__card--title, [class*='card--title'], h2, h3"
-                )
-                title = (await title_el.inner_text()).strip() if title_el else "1 BHK"
-
-                price_el = await card.query_selector(
-                    ".mb-srp__card--price, [class*='card--price'], [class*='price']"
-                )
-                price = parse_price(await price_el.inner_text()) if price_el else None
-                if price is None:
-                    continue
-
-                addr_el = await card.query_selector(
-                    ".mb-srp__card--locality, [class*='locality'], [class*='location']"
-                )
-                address = (
-                    (await addr_el.inner_text()).strip() if addr_el else f"{area}, Chennai"
-                )
-
-                img_els = await card.query_selector_all("img[src]")
-                images = [
-                    src for img in img_els[:3]
-                    if (src := await img.get_attribute("src")) and not src.startswith("data:")
-                ]
-
-                listings.append(Listing(
-                    id=listing_id, source="magicbricks", title=title,
-                    address=address, price=price, url=href, images=images,
-                ))
-            except Exception:
-                logger.exception("Error parsing MagicBricks card")
-    finally:
-        await page.close()
+            logger.exception("MagicBricks API: error parsing property")
     return listings
 
 
-async def _scrape_async() -> list[Listing]:
-    seen_ids: set[str] = set()
-    all_listings: list[Listing] = []
-    async with get_browser_context() as ctx:
-        for url in SEARCH_URLS:
+def _try_page_scrape(area: str) -> list[Listing]:
+    """Fetch the search page and extract JSON or HTML data."""
+    url = MB_PAGE_URL.format(area=area)
+    try:
+        resp = requests.get(url, headers=_HEADERS, timeout=30)
+        if resp.status_code not in (200, 206):
+            return []
+        html = resp.text
+
+        # Try __NEXT_DATA__
+        m = _NEXT_DATA_RE.search(html)
+        if m:
             try:
-                results = await _scrape_url(ctx, url)
-                for l in results:
-                    if l.id not in seen_ids:
-                        seen_ids.add(l.id)
-                        all_listings.append(l)
+                data = json.loads(m.group(1))
+                props = None
+                for path in [
+                    ["props", "pageProps", "propertyList"],
+                    ["props", "pageProps", "data", "propertyList"],
+                    ["props", "pageProps", "initialState", "propertyList"],
+                ]:
+                    obj = data
+                    try:
+                        for key in path:
+                            obj = obj[key]
+                        if isinstance(obj, list) and obj:
+                            props = obj
+                            break
+                    except (KeyError, TypeError):
+                        pass
+
+                if props:
+                    listings = []
+                    for prop in props:
+                        try:
+                            pid = str(prop.get("propId") or prop.get("id") or "")
+                            if not pid:
+                                continue
+                            price = prop.get("price") or prop.get("rent") or 0
+                            if isinstance(price, str):
+                                price = _parse_price(price) or 0
+                            price = int(price)
+                            if not price or price > 20000:
+                                continue
+                            locality = prop.get("localityTitle") or prop.get("locality") or area
+                            url_prop = f"https://www.magicbricks.com/propertyDetails/{pid}.html"
+                            listings.append(Listing(
+                                id=f"mb_{pid}",
+                                source="magicbricks",
+                                title=prop.get("heading") or f"1 BHK, {locality}",
+                                address=f"{locality}, Chennai",
+                                price=price,
+                                url=url_prop,
+                            ))
+                        except Exception:
+                            pass
+                    if listings:
+                        return listings
             except Exception:
-                logger.exception("MagicBricks failed for URL: %s", url)
-    logger.info("MagicBricks total unique: %d", len(all_listings))
-    return all_listings
+                pass
+
+        # Try HTML card scraping
+        # MagicBricks property cards have data-id attribute
+        card_pattern = re.compile(
+            r'data-propid=["\'](\d+)["\'].*?'
+            r'(?:₹|Rs\.?)\s*([\d,]+)',
+            re.DOTALL,
+        )
+        seen: set[str] = set()
+        listings = []
+        for m in card_pattern.finditer(html):
+            pid, price_raw = m.group(1), m.group(2)
+            if pid in seen:
+                continue
+            seen.add(pid)
+            price = _parse_price(price_raw)
+            if not price or price > 20000:
+                continue
+
+            # Get context to extract title/locality
+            ctx_start = max(0, m.start() - 200)
+            context = html[ctx_start:m.start() + 600]
+            title_m = re.search(r'(?:class=["\'][^"\']*(?:title|heading)[^"\']*["\'][^>]*>|<h[1-4][^>]*>)\s*([^<]{10,100})', context)
+            title = title_m.group(1).strip() if title_m else f"1 BHK, {area}"
+
+            listings.append(Listing(
+                id=f"mb_{pid}",
+                source="magicbricks",
+                title=title,
+                address=f"{area}, Chennai",
+                price=price,
+                url=f"https://www.magicbricks.com/propertyDetails/{pid}.html",
+            ))
+        return listings
+    except Exception:
+        logger.exception("MagicBricks page scrape [%s]: failed", area)
+        return []
+
+
+def _scrape_area(area: str, area_id: str) -> list[Listing]:
+    # Try API first, then page scrape
+    listings = _try_api(area, area_id)
+    if not listings:
+        listings = _try_page_scrape(area)
+    logger.info("MagicBricks [%s]: found %d listings", area, len(listings))
+    return listings
 
 
 def scrape() -> list[Listing]:
-    return asyncio.run(_scrape_async())
+    seen: set[str] = set()
+    all_listings: list[Listing] = []
+    for area, area_id in SEARCH_AREAS:
+        for l in _scrape_area(area, area_id):
+            if l.id not in seen:
+                seen.add(l.id)
+                all_listings.append(l)
+        time.sleep(2)
+    logger.info("MagicBricks total unique: %d", len(all_listings))
+    return all_listings

@@ -1,116 +1,149 @@
-import asyncio
+"""
+Quikr scraper — requests-based HTML parsing.
+Quikr.com Chennai rental listings via HTTP requests (no browser needed).
+"""
+import hashlib
+import json
 import logging
 import re
+import time
+import requests
 from src.models import Listing
-from src.scrapers.base import get_browser_context, new_stealth_page
 
 logger = logging.getLogger(__name__)
 
-# Quikr — multiple areas near Chromepet office
 SEARCH_URLS = [
-    "https://www.quikr.com/homes/flats-for-rent-in-chromepet+chennai?category_id=2&sub_category=1bhk&max_price=15000",
-    "https://www.quikr.com/homes/flats-for-rent-in-pallavaram+chennai?category_id=2&sub_category=1bhk&max_price=15000",
-    "https://www.quikr.com/homes/flats-for-rent-in-tambaram+chennai?category_id=2&sub_category=1bhk&max_price=15000",
+    "https://www.quikr.com/homes/flats-for-rent-in-Chromepet+Chennai/ci10/cni175/sb1/bd1/p15000",
+    "https://www.quikr.com/homes/flats-for-rent-in-Pallavaram+Chennai/ci10/cni175/sb1/bd1/p15000",
+    "https://www.quikr.com/homes/flats-for-rent-in-Tambaram+Chennai/ci10/cni175/sb1/bd1/p15000",
 ]
 
-CARD_SELECTOR = (
-    ".product-info, [class*='listing-card'], "
-    "[class*='QuikrCard'], [class*='productCard']"
-)
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/122.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.quikr.com/",
+    "Connection": "keep-alive",
+}
 
-_ID_PATTERN = re.compile(r"(\d{6,})(?:/|$|\?)")
-
-
-def extract_id(url: str) -> str:
-    match = _ID_PATTERN.search(url)
-    return match.group(1) if match else url.rstrip("/").split("/")[-1]
-
-
-def parse_price(text: str) -> int | None:
-    digits = re.sub(r"[^\d]", "", text)
-    return int(digits) if digits else None
+_ID_RE = re.compile(r"(\d{7,})")
+_PRICE_RE = re.compile(r"(?:₹|Rs\.?)\s*([\d,]+)")
 
 
-async def _scrape_url(ctx, url: str) -> list[Listing]:
-    listings = []
-    area = url.split("flats-for-rent-in-")[1].split("+")[0] if "flats-for-rent-in-" in url else "?"
-    page = await new_stealth_page(ctx)
+def _parse_price(text: str) -> int | None:
+    text = str(text).replace(",", "")
+    m = re.search(r"\d{4,}", text)
+    return int(m.group()) if m else None
+
+
+def _scrape_url(url: str) -> list[Listing]:
+    area = re.search(r"in-([^+/]+)", url)
+    area_name = area.group(1).replace("+", " ") if area else "Chennai"
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-        try:
-            await page.wait_for_selector(
-                ".product-info, [class*='listing-card'], [class*='card'], "
-                "[class*='quikr-card']",
-                timeout=15000,
-            )
-        except Exception:
-            await page.wait_for_timeout(5000)
+        resp = requests.get(url, headers=_HEADERS, timeout=25)
+        if resp.status_code != 200:
+            logger.info("Quikr [%s]: HTTP %d", area_name, resp.status_code)
+            return []
+        html = resp.text
 
-        cards = await page.query_selector_all(CARD_SELECTOR)
-        logger.info("Quikr [%s]: found %d cards", area, len(cards))
-
-        for card in cards:
+        # Try JSON embedded state
+        json_match = re.search(r'window\.__INITIAL_STATE__\s*=\s*({.*?});\s*</script>', html, re.DOTALL)
+        if json_match:
             try:
-                url_el = await card.query_selector("a")
-                if not url_el:
-                    continue
-                href = await url_el.get_attribute("href") or ""
-                if not href.startswith("http"):
-                    href = "https://www.quikr.com" + href
-                listing_id = extract_id(href)
-
-                title_el = await card.query_selector(
-                    "h2, h3, .product-title, [class*='title']"
-                )
-                title = (await title_el.inner_text()).strip() if title_el else "1 BHK"
-
-                price_el = await card.query_selector(
-                    ".product-price, [class*='price'], [class*='Price']"
-                )
-                price = parse_price(await price_el.inner_text()) if price_el else None
-                if price is None:
-                    continue
-
-                addr_el = await card.query_selector(
-                    ".product-locality, [class*='location'], [class*='locality']"
-                )
-                address = (
-                    (await addr_el.inner_text()).strip() if addr_el else f"{area}, Chennai"
-                )
-
-                img_els = await card.query_selector_all("img[src]")
-                images = [
-                    src for img in img_els[:3]
-                    if (src := await img.get_attribute("src")) and not src.startswith("data:")
-                ]
-
-                listings.append(Listing(
-                    id=listing_id, source="quikr", title=title,
-                    address=address, price=price, url=href, images=images,
-                ))
+                data = json.loads(json_match.group(1))
+                ads = None
+                for path in [["listing", "ads"], ["ads"], ["search", "results"]]:
+                    obj = data
+                    try:
+                        for key in path:
+                            obj = obj[key]
+                        if isinstance(obj, list) and obj:
+                            ads = obj
+                            break
+                    except (KeyError, TypeError):
+                        pass
+                if ads:
+                    listings = []
+                    for ad in ads:
+                        try:
+                            aid = str(ad.get("id") or "")
+                            if not aid:
+                                continue
+                            price_raw = ad.get("price") or ad.get("rent") or 0
+                            if isinstance(price_raw, str):
+                                price = _parse_price(price_raw) or 0
+                            else:
+                                price = int(price_raw)
+                            if not price or price > 20000:
+                                continue
+                            title = ad.get("title") or f"1 BHK, {area_name}"
+                            address = (
+                                (ad.get("location") or {}).get("locality") or
+                                f"{area_name}, Chennai"
+                            )
+                            ad_url = ad.get("url") or f"https://www.quikr.com/homes/{aid}"
+                            if not ad_url.startswith("http"):
+                                ad_url = "https://www.quikr.com" + ad_url
+                            listings.append(Listing(
+                                id=f"quikr_{aid}",
+                                source="quikr",
+                                title=title,
+                                address=address,
+                                price=price,
+                                url=ad_url,
+                            ))
+                        except Exception:
+                            pass
+                    if listings:
+                        logger.info("Quikr [%s]: %d listings via JSON", area_name, len(listings))
+                        return listings
             except Exception:
-                logger.exception("Error parsing Quikr card")
-    finally:
-        await page.close()
-    return listings
+                pass
 
+        # HTML fallback
+        seen: set[str] = set()
+        listings = []
+        link_re = re.compile(r'href=["\'](https://www\.quikr\.com/homes/[^"\']+/(\d{7,}))["\']')
+        for m in link_re.finditer(html):
+            href, aid = m.group(1), m.group(2)
+            if aid in seen:
+                continue
+            seen.add(aid)
+            ctx = html[m.start():m.start() + 500]
+            pm = _PRICE_RE.search(ctx)
+            if not pm:
+                continue
+            price = _parse_price(pm.group(1))
+            if not price or price > 20000:
+                continue
+            listings.append(Listing(
+                id=f"quikr_{aid}",
+                source="quikr",
+                title=f"1 BHK, {area_name}",
+                address=f"{area_name}, Chennai",
+                price=price,
+                url=href,
+            ))
 
-async def _scrape_async() -> list[Listing]:
-    seen_ids: set[str] = set()
-    all_listings: list[Listing] = []
-    async with get_browser_context() as ctx:
-        for url in SEARCH_URLS:
-            try:
-                results = await _scrape_url(ctx, url)
-                for l in results:
-                    if l.id not in seen_ids:
-                        seen_ids.add(l.id)
-                        all_listings.append(l)
-            except Exception:
-                logger.exception("Quikr failed for URL: %s", url)
-    logger.info("Quikr total unique: %d", len(all_listings))
-    return all_listings
+        logger.info("Quikr [%s]: %d listings", area_name, len(listings))
+        return listings
+    except Exception:
+        logger.exception("Quikr [%s]: request failed", area_name)
+        return []
 
 
 def scrape() -> list[Listing]:
-    return asyncio.run(_scrape_async())
+    seen: set[str] = set()
+    all_listings: list[Listing] = []
+    for url in SEARCH_URLS:
+        for l in _scrape_url(url):
+            if l.id not in seen:
+                seen.add(l.id)
+                all_listings.append(l)
+        time.sleep(2)
+    logger.info("Quikr total unique: %d", len(all_listings))
+    return all_listings

@@ -1,14 +1,15 @@
 """
-One-shot fetch: scrape all sources, filter to 5km radius, print + WhatsApp top matches.
-Usage: python fetch_now.py
+One-shot fetch: scrape all sources, filter, print + send top matches.
+Usage:  python fetch_now.py
 """
 import io
 import logging
 import os
 import sys
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-from dotenv import load_dotenv
 
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+
+from dotenv import load_dotenv
 load_dotenv()
 
 logging.basicConfig(
@@ -17,44 +18,38 @@ logging.basicConfig(
 )
 logger = logging.getLogger("fetch_now")
 
-OFFICE_LAT   = float(os.environ.get("OFFICE_LAT", "12.9698"))
-OFFICE_LNG   = float(os.environ.get("OFFICE_LNG", "80.1409"))
-MAX_RADIUS   = 5.0   # km — tight 5km run
-DB_PATH      = os.environ.get("DB_PATH", "data/rental_monitor.db")
-
+from config import OFFICE_LAT, OFFICE_LNG, MAX_RADIUS_KM, PROPERTY_LABEL, MAX_RENT
 from src.db import init_db, get_connection
 from src.scheduler import run_all_scrapers, apply_property_filter
 from src.filters.distance_filter import apply_distance_filter, is_priority_locality
+from src.notifier import telegram_bot as _tg
 from src.notifier.whatsapp import send_alert, _get_client, format_message
+
+DB_PATH = os.environ.get("DB_PATH", "data/rental_monitor.db")
 
 
 def main():
     conn = get_connection(DB_PATH)
     init_db(conn)
 
-    logger.info("Scraping all sources (Chennai-wide)…")
+    logger.info("Scraping all sources for %s ≤ ₹%d in %s…", PROPERTY_LABEL, MAX_RENT, "Chennai")
     raw = run_all_scrapers()
     logger.info("Raw listings: %d", len(raw))
 
     filtered = apply_property_filter(raw)
     logger.info("After property filter: %d", len(filtered))
 
-    candidates = apply_distance_filter(filtered, conn, OFFICE_LAT, OFFICE_LNG, max_radius_km=MAX_RADIUS)
-    logger.info("Within %.1f km: %d listings", MAX_RADIUS, len(candidates))
+    candidates = apply_distance_filter(filtered, conn, OFFICE_LAT, OFFICE_LNG, max_radius_km=MAX_RADIUS_KM)
+    logger.info("Within %.1f km: %d listings", MAX_RADIUS_KM, len(candidates))
 
-    # For strict radius mode drop listings where geocoding failed (unknown distance)
     confirmed = [(l, z, d) for l, z, d in candidates if d is not None]
-    unknown   = [(l, z, d) for l, z, d in candidates if d is None]
-    logger.info("Geocoded: %d confirmed, %d unknown distance (skipped)", len(confirmed), len(unknown))
+    logger.info("Geocoded: %d confirmed", len(confirmed))
     candidates = confirmed
 
     if not candidates:
-        print("\nNo listings with confirmed location found within 5km.")
-        if unknown:
-            print(f"({len(unknown)} listings were found but geocoding failed — check addresses)")
+        print("\nNo listings found within the configured radius.")
         return
 
-    # Sort: priority locality first, then by distance, then by price
     candidates.sort(key=lambda x: (
         0 if is_priority_locality(x[0].address) else 1,
         x[2],
@@ -62,7 +57,7 @@ def main():
     ))
 
     print(f"\n{'='*60}")
-    print(f"  RESULTS — {len(candidates)} listings within 5km of office")
+    print(f"  RESULTS — {len(candidates)} listings within {MAX_RADIUS_KM:.0f}km")
     print(f"{'='*60}\n")
 
     for i, (listing, zone, dist_km) in enumerate(candidates, 1):
@@ -77,29 +72,38 @@ def main():
             print(f"     🗺  https://maps.google.com/?q={listing.lat},{listing.lng}")
         print()
 
-    # Send top 5 via WhatsApp
-    top = candidates[:5]
-    print(f"Sending top {len(top)} matches to WhatsApp…")
+    top = candidates[:10]
+    print(f"Sending {len(top)} matches via Telegram…")
 
-    client = _get_client()
-    from_number = os.environ["TWILIO_WHATSAPP_FROM"]
-    to_number   = os.environ["WHATSAPP_TO"]
-
-    # Summary header message
-    header_msg = (
-        f"🏠 *5km Search Results* — {len(candidates)} listings found\n"
-        f"Sending top {len(top)} matches now:"
+    use_telegram = bool(os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID"))
+    within_5 = sum(1 for _, _, d in top if d is not None and d <= 5.0)
+    header = (
+        f"🏠 *Rental Search Results*\n"
+        f"{len(candidates)} listings within {MAX_RADIUS_KM:.0f}km\n"
+        f"⭐ {within_5} within 5km\nSending all matches:"
     )
-    client.messages.create(body=header_msg, from_=from_number, to=to_number)
 
-    for listing, zone, dist_km in top:
-        try:
-            send_alert(listing, zone, dist_km)
-            logger.info("Sent alert for %s/%s", listing.source, listing.id)
-        except Exception:
-            logger.exception("Failed to send alert for %s/%s", listing.source, listing.id)
+    if use_telegram:
+        _tg.send_text(header)
+        for listing, zone, dist_km in top:
+            try:
+                _tg.send_alert(listing, zone, dist_km)
+            except Exception:
+                logger.exception("Failed to send alert for %s/%s", listing.source, listing.id)
+    else:
+        client = _get_client()
+        client.messages.create(
+            body=header,
+            from_=os.environ["TWILIO_WHATSAPP_FROM"],
+            to=os.environ["WHATSAPP_TO"],
+        )
+        for listing, zone, dist_km in top:
+            try:
+                send_alert(listing, zone, dist_km)
+            except Exception:
+                logger.exception("Failed to send alert for %s/%s", listing.source, listing.id)
 
-    print("Done. Check your WhatsApp!")
+    print("Done. Check your Telegram!")
 
 
 if __name__ == "__main__":

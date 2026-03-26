@@ -30,6 +30,8 @@ SCRAPERS = [
     "src.scrapers.olx",
     "src.scrapers.housing",
     "src.scrapers.quikr",
+    "src.scrapers.sulekha",       # new: Sulekha.com — less bot-blocked
+    "src.scrapers.duckduckgo",    # new: meta-search via DuckDuckGo — bypasses individual site bot detection
 ]
 
 

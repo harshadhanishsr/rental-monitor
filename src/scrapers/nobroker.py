@@ -1,120 +1,201 @@
-import asyncio
+"""
+NoBroker scraper — requests-based with __NEXT_DATA__ JSON extraction.
+Falls back to HTML parsing if JSON extraction fails.
+"""
+import json
 import logging
 import re
+import time
+try:
+    from curl_cffi import requests as _cffi_requests
+    _CFFI_AVAILABLE = True
+except ImportError:
+    import requests as _cffi_requests
+    _CFFI_AVAILABLE = False
 from src.models import Listing
-from src.scrapers.base import get_browser_context, new_stealth_page
+from config import SEARCH_AREAS, CITY, PROPERTY_SLUG, MAX_RENT
 
 logger = logging.getLogger(__name__)
 
-# Search multiple areas near the Chromepet office (each is a known working URL)
-SEARCH_URLS = [
-    "https://www.nobroker.in/property/rental/chennai/Chromepet?bedroom=1&budget=15000",
-    "https://www.nobroker.in/property/rental/chennai/Pallavaram?bedroom=1&budget=15000",
-    "https://www.nobroker.in/property/rental/chennai/Tambaram?bedroom=1&budget=15000",
-    "https://www.nobroker.in/property/rental/chennai/Nanganallur?bedroom=1&budget=15000",
-    "https://www.nobroker.in/property/rental/chennai/Pammal?bedroom=1&budget=15000",
-    "https://www.nobroker.in/property/rental/chennai/St-Thomas-Mount?bedroom=1&budget=15000",
-]
+# Build search URLs from config areas
+def _make_urls():
+    city = CITY.lower()
+    urls = []
+    for area in SEARCH_AREAS:
+        a = area.lower().replace(" ", "-")
+        urls.append(f"https://www.nobroker.in/{PROPERTY_SLUG}-flats-for-rent-in-{a}_{city}")
+    return urls
 
-CARD_SELECTOR = (
-    ".srpPropertyCard, [data-testid='property-card'], .property-tile, "
-    "[class*='PropertyTile'], [class*='property-card']"
+SEARCH_URLS = _make_urls()
+
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/122.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Referer": "https://www.nobroker.in/",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "same-origin",
+    "DNT": "1",
+}
+
+_NEXT_DATA_RE = re.compile(
+    r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>', re.DOTALL
 )
 
 
-def extract_id(url: str) -> str:
-    return url.rstrip("/").split("/")[-1]
+def _parse_price(text: str) -> int | None:
+    text = text.replace(",", "")
+    m = re.search(r"\d{4,}", text)
+    return int(m.group()) if m else None
 
 
-def parse_price(text: str) -> int | None:
-    digits = re.sub(r"[^\d]", "", text)
-    return int(digits) if digits else None
-
-
-async def _scrape_url(ctx, url: str) -> list[Listing]:
-    listings = []
-    page = await new_stealth_page(ctx)
+def _extract_from_next_data(html: str, area: str) -> list[Listing]:
+    match = _NEXT_DATA_RE.search(html)
+    if not match:
+        return []
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        data = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return []
+
+    prop_list = None
+    for path in [
+        ["props", "pageProps", "propertyList"],
+        ["props", "pageProps", "data", "propertyList"],
+        ["props", "pageProps", "searchResult", "propertyList"],
+        ["props", "pageProps", "initialState", "properties"],
+        ["props", "pageProps", "properties"],
+    ]:
+        obj = data
         try:
-            await page.wait_for_selector(CARD_SELECTOR, timeout=15000)
-        except Exception:
-            await page.wait_for_timeout(5000)
+            for key in path:
+                obj = obj[key]
+            if isinstance(obj, list) and obj:
+                prop_list = obj
+                break
+        except (KeyError, TypeError):
+            continue
 
-        cards = await page.query_selector_all(CARD_SELECTOR)
-        logger.info("NoBroker [%s]: found %d cards", url.split("/")[-1].split("?")[0], len(cards))
-
-        for card in cards:
-            try:
-                url_el = await card.query_selector("a[href*='/property/']")
-                if not url_el:
+    if not prop_list:
+        text = match.group(1)
+        prop_matches = re.findall(r'"propertyId"\s*:\s*"?(\d+)"?', text)
+        if prop_matches:
+            listings = []
+            rent_matches = re.findall(r'"expectedRent"\s*:\s*(\d+)', text)
+            addr_matches = re.findall(r'"localityName"\s*:\s*"([^"]+)"', text)
+            for i, pid in enumerate(prop_matches):
+                price = int(rent_matches[i]) if i < len(rent_matches) else None
+                if not price or price > MAX_RENT:
                     continue
-                href = await url_el.get_attribute("href") or ""
-                if not href.startswith("http"):
-                    href = "https://www.nobroker.in" + href
-                listing_id = extract_id(href)
-
-                title_el = await card.query_selector(
-                    ".property-title, h3, h4, [class*='title']"
-                )
-                title = (await title_el.inner_text()).strip() if title_el else "1 BHK"
-
-                price_el = await card.query_selector(
-                    ".price, [data-testid='price'], [class*='price'], "
-                    "[class*='Price'], [class*='rent']"
-                )
-                price_text = (await price_el.inner_text()).strip() if price_el else ""
-                price = parse_price(price_text)
-                if price is None:
-                    continue
-
-                addr_el = await card.query_selector(
-                    ".location, [data-testid='location'], [class*='location'], "
-                    "[class*='address'], [class*='locality']"
-                )
-                address = (
-                    (await addr_el.inner_text()).strip() if addr_el else "Chennai"
-                )
-
-                img_els = await card.query_selector_all("img[src]")
-                images = []
-                for img in img_els[:3]:
-                    src = await img.get_attribute("src")
-                    if src and not src.startswith("data:"):
-                        images.append(src)
-
+                loc = addr_matches[i] if i < len(addr_matches) else area
                 listings.append(Listing(
-                    id=listing_id,
+                    id=pid,
                     source="nobroker",
-                    title=title,
-                    address=address,
+                    title=f"1 BHK, {loc}",
+                    address=f"{loc}, {CITY}",
                     price=price,
-                    url=href,
-                    images=images,
+                    url=f"https://www.nobroker.in/property/rental/{CITY.lower()}/{pid}",
                 ))
-            except Exception:
-                logger.exception("Error parsing NoBroker card")
-    finally:
-        await page.close()
+            return listings
+        return []
+
+    listings = []
+    for prop in prop_list:
+        try:
+            pid = str(prop.get("propertyId") or prop.get("id") or "")
+            if not pid:
+                continue
+            rent = (
+                prop.get("rentDetails", {}) or {}
+            ).get("expectedRent") or prop.get("rent") or prop.get("price") or 0
+            if not rent:
+                continue
+            price = int(rent)
+            if price > MAX_RENT:
+                continue
+            locality = prop.get("localityName") or prop.get("locality") or area
+            subloc = prop.get("subLocalityName") or ""
+            address = f"{subloc}, {locality}, {CITY}" if subloc else f"{locality}, {CITY}"
+            title = prop.get("title") or f"1 BHK, {locality}"
+            furnishing = prop.get("furnishingDetails") or prop.get("furnishing") or "unknown"
+            listings.append(Listing(
+                id=pid,
+                source="nobroker",
+                title=title,
+                address=address,
+                price=price,
+                url=f"https://www.nobroker.in/property/rental/{CITY.lower()}/{pid}",
+                furnishing=furnishing,
+            ))
+        except Exception:
+            logger.exception("NoBroker: error parsing JSON property")
     return listings
 
 
-async def _scrape_async() -> list[Listing]:
-    seen_ids: set[str] = set()
-    all_listings: list[Listing] = []
-    async with get_browser_context() as ctx:
-        for url in SEARCH_URLS:
-            try:
-                results = await _scrape_url(ctx, url)
-                for l in results:
-                    if l.id not in seen_ids:
-                        seen_ids.add(l.id)
-                        all_listings.append(l)
-            except Exception:
-                logger.exception("NoBroker failed for URL: %s", url)
-    logger.info("NoBroker total unique: %d", len(all_listings))
-    return all_listings
+def _extract_from_html(html: str, area: str) -> list[Listing]:
+    pattern = re.compile(r'href=["\'](/property/rental/[^"\'?]+/([^"\'?/]+))["\']')
+    seen = set()
+    listings = []
+    for m in pattern.finditer(html):
+        path, pid = m.group(1), m.group(2)
+        if not pid.isdigit() or pid in seen:
+            continue
+        seen.add(pid)
+        context = html[m.start():m.start() + 500]
+        price = None
+        pm = re.search(r"(?:₹|Rs\.?)\s*([\d,]+)", context)
+        if pm:
+            price = _parse_price(pm.group(1))
+        if not price or price > MAX_RENT:
+            continue
+        listings.append(Listing(
+            id=pid,
+            source="nobroker",
+            title=f"1 BHK, {area}",
+            address=f"{area}, {CITY}",
+            price=price,
+            url=f"https://www.nobroker.in{path}",
+        ))
+    return listings
+
+
+def _scrape_url(url: str) -> list[Listing]:
+    area = url.split("in-")[1].split("_")[0] if "in-" in url else CITY.lower()
+    try:
+        if _CFFI_AVAILABLE:
+            session = _cffi_requests.Session(impersonate="chrome110")
+            resp = session.get(url, headers=_HEADERS, timeout=30)
+        else:
+            import requests as _req
+            session = _req.Session()
+            resp = session.get(url, headers=_HEADERS, timeout=30)
+        html = resp.text
+        listings = _extract_from_next_data(html, area)
+        if not listings:
+            listings = _extract_from_html(html, area)
+        logger.info("NoBroker [%s]: found %d listings", area, len(listings))
+        return listings
+    except Exception:
+        logger.exception("NoBroker [%s]: request failed", area)
+        return []
 
 
 def scrape() -> list[Listing]:
-    return asyncio.run(_scrape_async())
+    seen: set[str] = set()
+    all_listings: list[Listing] = []
+    for url in SEARCH_URLS:
+        for l in _scrape_url(url):
+            if l.id not in seen:
+                seen.add(l.id)
+                all_listings.append(l)
+        time.sleep(2)
+    logger.info("NoBroker total unique: %d", len(all_listings))
+    return all_listings
