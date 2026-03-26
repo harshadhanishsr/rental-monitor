@@ -8,7 +8,18 @@ from src.db import (
 from src.filters.property_filter import passes_property_filter
 from src.filters.distance_filter import apply_distance_filter
 from src.models import Listing
-from src.notifier.whatsapp import send_alert
+from src.notifier.whatsapp import send_alert as _whatsapp_alert
+from src.notifier import telegram_bot as _tg
+import os
+
+
+def send_alert(listing, zone, distance_km):
+    """Send via Telegram if configured, otherwise fall back to Twilio WhatsApp."""
+    if os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID"):
+        ok = _tg.send_alert(listing, zone, distance_km)
+        if ok:
+            return "telegram"
+    return _whatsapp_alert(listing, zone, distance_km)
 
 logger = logging.getLogger(__name__)
 

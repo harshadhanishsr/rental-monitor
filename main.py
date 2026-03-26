@@ -3,7 +3,15 @@ import os
 import time
 from dotenv import load_dotenv
 from src.db import init_db, get_connection
-from src.notifier.whatsapp import health_check
+from src.notifier.whatsapp import health_check as _whatsapp_health
+from src.notifier import telegram_bot as _tg
+import os
+
+
+def health_check():
+    if os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID"):
+        return _tg.health_check()
+    return _whatsapp_health()
 from src.scheduler import run_cycle
 
 load_dotenv()
