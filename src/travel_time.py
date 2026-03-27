@@ -118,6 +118,9 @@ def _gmaps_minutes(
         r = requests.get(GOOGLE_MAPS_API_URL, params=params, timeout=10)
         r.raise_for_status()
         data = r.json()
+        if not data.get("rows") or not data["rows"][0].get("elements"):
+            logger.warning("Google Maps: empty response for mode=%s", mode)
+            return None
         element = data["rows"][0]["elements"][0]
         if element["status"] != "OK":
             logger.warning("Google Maps: status=%s for %s mode", element["status"], mode)
