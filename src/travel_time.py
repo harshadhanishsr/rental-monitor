@@ -25,7 +25,7 @@ from haversine import haversine, Unit
 logger = logging.getLogger(__name__)
 
 # ── API endpoints ─────────────────────────────────────────────
-OLA_DIRECTIONS_URL = "https://api.olamaps.io/routing/v1/directions"
+OLA_DIRECTIONS_URL = "https://api.olamaps.io/routing/v1/distanceMatrix"
 ORS_DIRECTIONS_URL = "https://api.openrouteservice.org/v2/directions/{profile}/json"
 
 # ── Speed heuristics (km/h, Indian city conditions) ───────────
@@ -111,31 +111,37 @@ def _heuristic_minutes(dist_km: float, mode: str) -> float:
 # ── Ola Maps ──────────────────────────────────────────────────
 
 def _ola_minutes(olat, olng, dlat, dlng, mode: str) -> float | None:
-    """Query Ola Maps Directions API. Returns minutes or None on failure."""
+    """Query Ola Maps Distance Matrix API. Returns minutes or None on failure."""
     key = _ola_key()
     if not key:
         return None
     ola_mode = _OLA_MODE.get(mode, "driving")
+    # Transit not supported by distanceMatrix — use driving as proxy
+    if ola_mode == "transit":
+        ola_mode = "driving"
     params = {
-        "origin":      f"{olat},{olng}",
-        "destination": f"{dlat},{dlng}",
-        "mode":        ola_mode,
-        "api_key":     key,
+        "origins":      f"{olat},{olng}",
+        "destinations": f"{dlat},{dlng}",
+        "mode":         ola_mode,
+        "route_preference": "fastest",
+        "api_key":      key,
     }
     try:
         r = requests.get(OLA_DIRECTIONS_URL, params=params, timeout=10)
         r.raise_for_status()
         data = r.json()
-        if data.get("status") != "OK" or not data.get("routes"):
+        if data.get("status") not in ("OK", "SUCCESS"):
             logger.warning("Ola Maps: status=%s mode=%s", data.get("status"), mode)
             return None
-        leg = data["routes"][0]["legs"][0]
-        # duration_in_traffic preferred for driving; duration for transit/walking
-        duration = leg.get("duration_in_traffic") or leg.get("duration")
-        if isinstance(duration, dict):
-            secs = duration.get("value", 0)
-        else:
-            secs = int(duration or 0)
+        # Response: {"rows": [{"elements": [{"duration": {"value": secs}, "status": "OK"}]}]}
+        rows = data.get("rows", [])
+        if not rows or not rows[0].get("elements"):
+            return None
+        elem = rows[0]["elements"][0]
+        if elem.get("status") != "OK":
+            return None
+        dur = elem["duration"]
+        secs = dur["value"] if isinstance(dur, dict) else int(dur)
         return round(secs / 60, 1)
     except Exception:
         logger.exception("Ola Maps API failed for mode=%s", mode)
