@@ -1,13 +1,19 @@
 """
 Group house-hunting optimizer.
 
-Given N people with N different office locations, finds the geographical
-point that minimises total commute burden across the group (geometric median),
-then scores and ranks listings by fairness to all members.
+Given N people with N different office locations and transport modes,
+finds the geographical point that minimises total commute burden, then
+scores and ranks listings by fairness to all members.
+
+Scoring is based on TRAVEL TIME (minutes), not straight-line distance.
+Uses Google Maps Distance Matrix API when available; falls back to a
+speed heuristic (mode-aware) otherwise.
 """
 import logging
+import sqlite3
 from dataclasses import dataclass
 from haversine import haversine, Unit
+from src.travel_time import get_travel_time
 
 logger = logging.getLogger(__name__)
 
@@ -17,25 +23,42 @@ class MemberCommute:
     name: str
     office_lat: float
     office_lng: float
+    transport: str
     distance_km: float | None = None
+    travel_minutes: float | None = None
+    time_source: str = "heuristic"   # "gmaps" | "heuristic" | "cached"
+
+    @property
+    def display(self) -> str:
+        """Short label for alerts, e.g. '24 min (transit)' or '6.2 km'."""
+        if self.travel_minutes is not None:
+            indicator = "~" if self.time_source == "heuristic" else ""
+            return f"{indicator}{self.travel_minutes:.0f} min ({self.transport})"
+        return f"{self.distance_km:.1f} km"
 
 
 @dataclass
 class GroupScore:
-    """Commute breakdown for a single listing, for the whole group."""
+    """Commute breakdown for a single listing across all group members."""
     members: list[MemberCommute]
+
+    # Time-based metrics (minutes) — primary ranking signal
+    avg_minutes: float
+    max_minutes: float
+    min_minutes: float
+    fairness_score: float   # lower = better
+
+    # Distance fallback (km)
     avg_km: float
     max_km: float
-    min_km: float
-    fairness_score: float  # lower = better (minimise max + variance)
 
     @property
     def worst_commuter(self) -> MemberCommute:
-        return max(self.members, key=lambda m: m.distance_km or 0)
+        return max(self.members, key=lambda m: m.travel_minutes or m.distance_km or 0)
 
     @property
     def best_commuter(self) -> MemberCommute:
-        return min(self.members, key=lambda m: m.distance_km or 0)
+        return min(self.members, key=lambda m: m.travel_minutes or m.distance_km or 0)
 
 
 def geometric_median(
@@ -44,22 +67,20 @@ def geometric_median(
     tol: float = 1e-7,
 ) -> tuple[float, float]:
     """
-    Weiszfeld algorithm: finds the point minimising sum of distances to all offices.
-    Better than a simple centroid — robust to outliers, no one office dominates.
+    Weiszfeld algorithm: point minimising sum of distances to all office locations.
+    Better than a centroid — robust to outliers.
     """
     if len(points) == 1:
         return points[0]
 
-    # Start from centroid
     lat = sum(p[0] for p in points) / len(points)
     lng = sum(p[1] for p in points) / len(points)
 
     for _ in range(max_iter):
-        weights = []
-        for p in points:
-            d = haversine((lat, lng), p, unit=Unit.KILOMETERS)
-            weights.append(1.0 / max(d, 0.01))  # avoid div-by-zero
-
+        weights = [
+            1.0 / max(haversine((lat, lng), p, unit=Unit.KILOMETERS), 0.01)
+            for p in points
+        ]
         total_w = sum(weights)
         new_lat = sum(w * p[0] for w, p in zip(weights, points)) / total_w
         new_lng = sum(w * p[1] for w, p in zip(weights, points)) / total_w
@@ -86,63 +107,94 @@ def score_listing_for_group(
     listing_lat: float,
     listing_lng: float,
     members: list[dict],
+    conn: sqlite3.Connection,
 ) -> GroupScore:
     """
-    Calculate per-member commute distances and a fairness score for a listing.
+    Calculate per-member commute times and a fairness score for one listing.
 
     Fairness score (lower = better):
-        max_commute + 0.5 × std_deviation
-    This penalises both long worst-case commutes and inequitable splits.
+        max_commute_minutes + 0.5 × std_deviation_minutes
+    Penalises both the worst-case commute and inequity between members.
+    Falls back to km-based scoring if travel time is unavailable.
     """
     commutes = []
     for m in members:
-        d = haversine(
+        mode = m.get("transport", "driving")
+        dist_km = round(haversine(
             (m["office_lat"], m["office_lng"]),
             (listing_lat, listing_lng),
             unit=Unit.KILOMETERS,
+        ), 2)
+
+        minutes, source = get_travel_time(
+            listing_lat, listing_lng,
+            m["office_lat"], m["office_lng"],
+            mode, conn,
         )
+
         commutes.append(MemberCommute(
             name=m["name"],
             office_lat=m["office_lat"],
             office_lng=m["office_lng"],
-            distance_km=round(d, 2),
+            transport=mode,
+            distance_km=dist_km,
+            travel_minutes=round(minutes, 1),
+            time_source=source,
         ))
 
-    distances = [c.distance_km for c in commutes]
-    avg_km = sum(distances) / len(distances)
-    max_km = max(distances)
-    min_km = min(distances)
+    times = [c.travel_minutes for c in commutes]
+    avg_min = sum(times) / len(times)
+    max_min = max(times)
+    min_min = min(times)
 
-    variance = sum((d - avg_km) ** 2 for d in distances) / len(distances)
-    std_dev = variance ** 0.5
+    variance = sum((t - avg_min) ** 2 for t in times) / len(times)
+    fairness_score = max_min + 0.5 * (variance ** 0.5)
 
-    fairness_score = max_km + 0.5 * std_dev
+    dists = [c.distance_km for c in commutes]
 
     return GroupScore(
         members=commutes,
-        avg_km=round(avg_km, 2),
-        max_km=round(max_km, 2),
-        min_km=round(min_km, 2),
-        fairness_score=round(fairness_score, 3),
+        avg_minutes=round(avg_min, 1),
+        max_minutes=round(max_min, 1),
+        min_minutes=round(min_min, 1),
+        fairness_score=round(fairness_score, 2),
+        avg_km=round(sum(dists) / len(dists), 2),
+        max_km=round(max(dists), 2),
     )
 
 
-def passes_group_filter(score: GroupScore, max_per_person_km: float) -> bool:
-    """Reject the listing if any member's commute exceeds the per-person limit."""
-    return all(
-        (m.distance_km or 0) <= max_per_person_km
-        for m in score.members
-    )
+def passes_group_filter(
+    score: GroupScore,
+    max_minutes: float,
+    max_km: float,
+) -> bool:
+    """
+    Reject if any member exceeds the per-person commute limit.
+    Uses minutes if available, falls back to km.
+    """
+    for m in score.members:
+        if m.travel_minutes is not None and m.travel_minutes > max_minutes:
+            return False
+        if m.travel_minutes is None and (m.distance_km or 0) > max_km:
+            return False
+    return True
 
 
 def format_group_commutes(score: GroupScore) -> str:
     """Format per-member commute lines for Telegram alerts."""
-    lines = ["👥 *Commute distances:*"]
+    lines = ["👥 *Commute times:*"]
     for m in score.members:
-        d = m.distance_km
-        bar = "🟢" if d <= 5 else "🟡" if d <= 10 else "🔴"
-        lines.append(f"  {bar} {m.name}: {d:.1f} km")
+        mins = m.travel_minutes
+        if mins is not None:
+            bar = "🟢" if mins <= 20 else "🟡" if mins <= 40 else "🔴"
+            est = "~" if m.time_source == "heuristic" else ""
+            lines.append(f"  {bar} {m.name}: {est}{mins:.0f} min ({m.transport})")
+        else:
+            d = m.distance_km or 0
+            bar = "🟢" if d <= 5 else "🟡" if d <= 10 else "🔴"
+            lines.append(f"  {bar} {m.name}: {d:.1f} km ({m.transport})")
+
     lines.append(
-        f"  📊 Avg: {score.avg_km:.1f} km | Max: {score.max_km:.1f} km"
+        f"  📊 Avg: {score.avg_minutes:.0f} min | Worst: {score.max_minutes:.0f} min"
     )
     return "\n".join(lines)

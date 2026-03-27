@@ -84,27 +84,47 @@ GROUP_MODE = False   # Set to True to enable group search
 GROUP_MEMBERS = [
     # Add one entry per person. Name is used in alerts.
     # Get coordinates: https://maps.google.com → right-click on your office → "What's here?"
+    #
+    # transport options:
+    #   "driving"     — car or two-wheeler
+    #   "transit"     — bus / metro / train (most accurate with Google Maps API key)
+    #   "two_wheeler" — bike/scooter (treated as driving)
+    #   "company_cab" — company-provided cab (treated as driving)
     {
         "name":       "Alice",
         "office_lat": 13.0827,    # ← replace with your office latitude
         "office_lng": 80.2707,    # ← replace with your office longitude
+        "transport":  "transit",  # ← how Alice gets to work
     },
     {
         "name":       "Bob",
         "office_lat": 12.9279,
         "office_lng": 80.1677,
+        "transport":  "driving",
     },
     # Add more people here:
     # {
     #     "name":       "Carol",
     #     "office_lat": 13.0569,
     #     "office_lng": 80.2425,
+    #     "transport":  "two_wheeler",
     # },
 ]
 
-# Maximum commute each member is willing to accept (km)
-# Listings where ANY member would exceed this are filtered out
+# Maximum commute time each member is willing to accept (minutes).
+# Listings where ANY member would exceed this are filtered out.
+# Used when travel time is available (Google Maps API key set).
+MAX_COMMUTE_PER_PERSON_MINUTES = 45
+
+# Fallback when no API key: maximum straight-line distance per person (km)
 MAX_COMMUTE_PER_PERSON_KM = 15.0
+
+# ── GOOGLE MAPS API (optional but recommended for group mode) ─
+# Without this, travel times are estimated from straight-line distance.
+# Get a free API key: https://console.cloud.google.com → Enable "Distance Matrix API"
+# Free tier: 40,000 elements/month (enough for daily use)
+# Set in .env:  GOOGLE_MAPS_API_KEY=AIza...
+GOOGLE_MAPS_API_KEY = ""  # leave blank — read from .env at runtime
 
 # ── NOTIFICATIONS ─────────────────────────────────────────────
 # Keep secrets in .env — not here.
