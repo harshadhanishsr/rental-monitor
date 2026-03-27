@@ -9,29 +9,37 @@
 # ── REFERENCE LOCATION ───────────────────────────────────────
 # Your office / workplace / any point you want proximity to.
 # Find coordinates: https://maps.google.com → right-click → "What's here?"
-OFFICE_LAT = 13.0827   # latitude  (example: Chennai city centre — change to your location)
-OFFICE_LNG = 80.2707   # longitude (right-click on Google Maps → "What's here?" to get yours)
+import os as _os
+from dotenv import load_dotenv as _load_dotenv
+_load_dotenv()
+
+# Reads from .env if set, otherwise falls back to example coords below.
+# Set OFFICE_LAT / OFFICE_LNG in your .env to keep your real location private.
+OFFICE_LAT = float(_os.environ.get("OFFICE_LAT", "13.0827"))   # example: Chennai city centre
+OFFICE_LNG = float(_os.environ.get("OFFICE_LNG", "80.2707"))
 
 # ── CITY & AREAS ─────────────────────────────────────────────
 CITY = "Chennai"   # City name (used in scraper search queries)
 
 # Localities to actively search. Scrapers will target each of these.
 SEARCH_AREAS = [
+    # Areas between Chromepet and Sholinganallur — the sweet spot for both offices
+    "Pallikaranai",
+    "Medavakkam",
+    "Keelkattalai",
+    "Nanganallur",
+    "Adambakkam",
+    "Perumbakkam",
+    "Sholinganallur",
+    "Ullagaram",
     "Chromepet",
     "Pallavaram",
-    "Tambaram",
-    "Nanganallur",
-    "Pammal",
-    "Selaiyur",
 ]
 
-# Areas that are especially convenient for you — listed first in alerts
-# and marked with ⭐. Add any locality you'd prefer to live near.
 PRIORITY_LOCALITIES = {
-    "chromepet", "pallavaram", "nanganallur", "pammal", "selaiyur",
-    "st. thomas mount", "meenambakkam", "tirusulam", "alandur",
-    "kilkattalai", "perungalathur", "mudichur", "tambaram",
-    "ullagaram", "puzhuthivakkam", "medavakkam",
+    "pallikaranai", "medavakkam", "keelkattalai", "nanganallur",
+    "adambakkam", "perumbakkam", "ullagaram", "chromepet",
+    "pallavaram", "sholinganallur", "puzhuthivakkam",
 }
 
 # ── SEARCH RADIUS ─────────────────────────────────────────────
@@ -79,42 +87,27 @@ CHECK_INTERVAL_SECONDS = 3600
 # When GROUP_MODE is True, OFFICE_LAT/OFFICE_LNG above are IGNORED —
 # the optimal search centre is automatically calculated from GROUP_MEMBERS.
 
-GROUP_MODE = False   # Set to True to enable group search
+GROUP_MODE = True   # Set to True to enable group search
 
 GROUP_MEMBERS = [
-    # Add one entry per person. Name is used in alerts.
-    # Get coordinates: https://maps.google.com → right-click on your office → "What's here?"
-    #
-    # transport options:
-    #   "driving"     — car or two-wheeler
-    #   "transit"     — bus / metro / train (most accurate with Google Maps API key)
-    #   "two_wheeler" — bike/scooter (treated as driving)
-    #   "company_cab" — company-provided cab (treated as driving)
     {
-        "name":       "Alice",
-        "office_lat": 13.0827,    # ← replace with your office latitude
-        "office_lng": 80.2707,    # ← replace with your office longitude
-        "transport":  "transit",  # ← how Alice gets to work
+        "name":       "Harsha",
+        "office_lat": 12.9698,   # Blackstraw AI, Chromepet
+        "office_lng": 80.1409,
+        "transport":  "transit",
     },
     {
-        "name":       "Bob",
-        "office_lat": 12.9279,
-        "office_lng": 80.1677,
-        "transport":  "driving",
+        "name":       "Daddy",
+        "office_lat": 12.9010,   # Wipro, Sholinganallur ELCOT SEZ
+        "office_lng": 80.2278,
+        "transport":  "transit",
     },
-    # Add more people here:
-    # {
-    #     "name":       "Carol",
-    #     "office_lat": 13.0569,
-    #     "office_lng": 80.2425,
-    #     "transport":  "two_wheeler",
-    # },
 ]
 
 # Maximum commute time each member is willing to accept (minutes).
 # Listings where ANY member would exceed this are filtered out.
 # Used when travel time is available (Google Maps API key set).
-MAX_COMMUTE_PER_PERSON_MINUTES = 45
+MAX_COMMUTE_PER_PERSON_MINUTES = 50
 
 # Fallback when no API key: maximum straight-line distance per person (km)
 MAX_COMMUTE_PER_PERSON_KM = 15.0

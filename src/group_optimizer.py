@@ -6,8 +6,8 @@ finds the geographical point that minimises total commute burden, then
 scores and ranks listings by fairness to all members.
 
 Scoring is based on TRAVEL TIME (minutes), not straight-line distance.
-Uses Google Maps Distance Matrix API when available; falls back to a
-speed heuristic (mode-aware) otherwise.
+Uses Ola Maps (driving/transit) and OpenRouteService (walking) when API
+keys are set; falls back to a speed heuristic (mode-aware) otherwise.
 """
 import logging
 import sqlite3
@@ -26,14 +26,18 @@ class MemberCommute:
     transport: str
     distance_km: float | None = None
     travel_minutes: float | None = None
-    time_source: str = "heuristic"   # "gmaps" | "heuristic" | "cached"
+    walk_minutes: float | None = None   # ORS walking supplement (transit mode only)
+    time_source: str = "heuristic"   # "ola" | "ola+ors" | "ors" | "heuristic" | "cached"
 
     @property
     def display(self) -> str:
         """Short label for alerts, e.g. '24 min (transit)' or '6.2 km'."""
         if self.travel_minutes is not None:
             indicator = "~" if self.time_source == "heuristic" else ""
-            return f"{indicator}{self.travel_minutes:.0f} min ({self.transport})"
+            label = f"{indicator}{self.travel_minutes:.0f} min ({self.transport})"
+            if self.walk_minutes is not None:
+                label += f" (~{self.walk_minutes:.0f} min walking)"
+            return label
         return f"{self.distance_km:.1f} km"
 
 
@@ -126,7 +130,7 @@ def score_listing_for_group(
             unit=Unit.KILOMETERS,
         ), 2)
 
-        minutes, source = get_travel_time(
+        minutes, source, walk_minutes = get_travel_time(
             listing_lat, listing_lng,
             m["office_lat"], m["office_lng"],
             mode, conn,
@@ -139,6 +143,7 @@ def score_listing_for_group(
             transport=mode,
             distance_km=dist_km,
             travel_minutes=round(minutes, 1),
+            walk_minutes=round(walk_minutes, 1) if walk_minutes is not None else None,
             time_source=source,
         ))
 
@@ -188,7 +193,10 @@ def format_group_commutes(score: GroupScore) -> str:
         if mins is not None:
             bar = "🟢" if mins <= 20 else "🟡" if mins <= 40 else "🔴"
             est = "~" if m.time_source == "heuristic" else ""
-            lines.append(f"  {bar} {m.name}: {est}{mins:.0f} min ({m.transport})")
+            line = f"  {bar} {m.name}: {est}{mins:.0f} min ({m.transport})"
+            if m.walk_minutes is not None:
+                line += f" (~{m.walk_minutes:.0f} min walking)"
+            lines.append(line)
         else:
             d = m.distance_km or 0
             bar = "🟢" if d <= 5 else "🟡" if d <= 10 else "🔴"

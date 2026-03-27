@@ -1,15 +1,20 @@
 """
 Travel time estimation between two coordinates.
 
-Priority:
-1. Google Maps Distance Matrix API (most accurate — real traffic, real transit routes)
-2. Heuristic estimate based on straight-line distance + transport mode
-   (used when no API key is set or the API call fails)
+Strategy (in priority order):
+1. Ola Maps API  — primary source for driving + transit in India.
+                   Knows Chennai MTC bus routes, MRTS, metro, real traffic.
+2. OpenRouteService — used for walking legs (to/from transit stops).
+                   Combined with Ola Maps transit for door-to-door accuracy.
+3. Heuristic     — straight-line distance × mode speed. Used when both APIs
+                   are unavailable or fail. Results marked with ~ in alerts.
 
-Caches results in SQLite so the same origin→destination pair is never
-queried twice, keeping API usage within the free tier.
+Setup (both free, no credit card):
+  Ola Maps:  https://maps.olacabs.com/api  →  OLA_MAPS_API_KEY in .env
+  ORS:       https://openrouteservice.org  →  ORS_API_KEY in .env
 """
 import hashlib
+import json
 import logging
 import os
 import sqlite3
@@ -19,147 +24,214 @@ from haversine import haversine, Unit
 
 logger = logging.getLogger(__name__)
 
-# ── Speed heuristics (city conditions, India) ─────────────────
-# Used when Google Maps API is not configured.
-# Values in km/h; travel_minutes = distance_km / speed * 60
-_HEURISTIC_SPEED_KMH = {
-    "driving":     28,   # city traffic, car/auto
-    "two_wheeler": 25,   # bike/scooter in traffic
-    "transit":     18,   # bus + walk overhead
-    "company_cab": 30,   # slightly faster (dedicated route, less stopping)
-}
-_DEFAULT_SPEED_KMH = 25
+# ── API endpoints ─────────────────────────────────────────────
+OLA_DIRECTIONS_URL = "https://api.olamaps.io/routing/v1/directions"
+ORS_DIRECTIONS_URL = "https://api.openrouteservice.org/v2/directions/{profile}/json"
 
-# Google Maps mode mapping
-_GMAPS_MODE = {
+# ── Speed heuristics (km/h, Indian city conditions) ───────────
+_SPEED = {
+    "driving":     28,
+    "two_wheeler": 25,
+    "transit":     18,   # bus + walk overhead
+    "company_cab": 30,
+    "walking":     5,
+}
+
+# ── Ola Maps mode mapping ─────────────────────────────────────
+_OLA_MODE = {
     "driving":     "driving",
-    "two_wheeler": "driving",   # Google doesn't have two_wheeler in all regions
+    "two_wheeler": "driving",
     "transit":     "transit",
     "company_cab": "driving",
+    "walking":     "walking",
 }
 
-GOOGLE_MAPS_API_URL = (
-    "https://maps.googleapis.com/maps/api/distancematrix/json"
-)
+# ── ORS profile mapping ───────────────────────────────────────
+_ORS_PROFILE = {
+    "driving":     "driving-car",
+    "two_wheeler": "driving-car",
+    "walking":     "foot-walking",
+    "transit":     "foot-walking",   # ORS used only for walking legs in transit
+}
 
 
-def _api_key() -> str:
-    return os.environ.get("GOOGLE_MAPS_API_KEY", "")
+def _ola_key() -> str:
+    return os.environ.get("OLA_MAPS_API_KEY", "")
 
 
-def _cache_key(orig_lat, orig_lng, dest_lat, dest_lng, mode: str) -> str:
-    s = f"{orig_lat:.4f},{orig_lng:.4f}→{dest_lat:.4f},{dest_lng:.4f}|{mode}"
-    return hashlib.sha256(s.encode()).hexdigest()[:20]
+def _ors_key() -> str:
+    return os.environ.get("ORS_API_KEY", "")
 
+
+# ── SQLite cache ──────────────────────────────────────────────
 
 def _init_cache(conn: sqlite3.Connection) -> None:
     conn.execute("""
         CREATE TABLE IF NOT EXISTS travel_time_cache (
-            cache_key  TEXT PRIMARY KEY,
-            minutes    REAL,
-            source     TEXT,
-            created_at INTEGER DEFAULT (strftime('%s','now'))
+            cache_key   TEXT PRIMARY KEY,
+            minutes     REAL,
+            walk_minutes REAL,
+            source      TEXT,
+            created_at  INTEGER DEFAULT (strftime('%s','now'))
         )
     """)
     conn.commit()
 
 
-def _get_cached(conn: sqlite3.Connection, key: str) -> float | None:
+def _cache_key(olat, olng, dlat, dlng, mode: str) -> str:
+    s = f"{olat:.4f},{olng:.4f}|{dlat:.4f},{dlng:.4f}|{mode}"
+    return hashlib.sha256(s.encode()).hexdigest()[:20]
+
+
+def _get_cached(conn: sqlite3.Connection, key: str):
     row = conn.execute(
-        "SELECT minutes FROM travel_time_cache WHERE cache_key = ?", (key,)
+        "SELECT minutes, walk_minutes, source FROM travel_time_cache WHERE cache_key = ?",
+        (key,)
     ).fetchone()
-    return row[0] if row else None
+    return row if row else None
 
 
-def _set_cached(conn: sqlite3.Connection, key: str, minutes: float, source: str) -> None:
+def _set_cached(conn, key, minutes, walk_minutes, source):
     conn.execute(
-        "INSERT OR REPLACE INTO travel_time_cache (cache_key, minutes, source) VALUES (?, ?, ?)",
-        (key, minutes, source),
+        "INSERT OR REPLACE INTO travel_time_cache "
+        "(cache_key, minutes, walk_minutes, source) VALUES (?, ?, ?, ?)",
+        (key, minutes, walk_minutes, source),
     )
     conn.commit()
 
 
-def _heuristic_minutes(distance_km: float, mode: str) -> float:
-    """Estimate travel time from straight-line distance using mode-specific speed."""
-    speed = _HEURISTIC_SPEED_KMH.get(mode, _DEFAULT_SPEED_KMH)
-    # Add 20% overhead for route inefficiency (roads aren't straight lines)
-    road_km = distance_km * 1.25
-    return round(road_km / speed * 60, 1)
+# ── Heuristic fallback ────────────────────────────────────────
+
+def _heuristic_minutes(dist_km: float, mode: str) -> float:
+    """Estimate travel time. Road distance ≈ straight-line × 1.25."""
+    speed = _SPEED.get(mode, 20)
+    return round(dist_km * 1.25 / speed * 60, 1)
 
 
-def _gmaps_minutes(
-    orig_lat: float, orig_lng: float,
-    dest_lat: float, dest_lng: float,
-    mode: str,
-) -> float | None:
-    """Query Google Maps Distance Matrix API. Returns minutes or None on failure."""
-    api_key = _api_key()
-    if not api_key:
+# ── Ola Maps ──────────────────────────────────────────────────
+
+def _ola_minutes(olat, olng, dlat, dlng, mode: str) -> float | None:
+    """Query Ola Maps Directions API. Returns minutes or None on failure."""
+    key = _ola_key()
+    if not key:
         return None
-    gmode = _GMAPS_MODE.get(mode, "driving")
+    ola_mode = _OLA_MODE.get(mode, "driving")
     params = {
-        "origins":      f"{orig_lat},{orig_lng}",
-        "destinations": f"{dest_lat},{dest_lng}",
-        "mode":         gmode,
-        "key":          api_key,
-        "units":        "metric",
+        "origin":      f"{olat},{olng}",
+        "destination": f"{dlat},{dlng}",
+        "mode":        ola_mode,
+        "api_key":     key,
     }
-    if gmode == "transit":
-        # Use weekday morning rush hour for realistic transit time
-        # Use next Monday 9am (epoch)
-        import datetime
-        now = datetime.datetime.now()
-        days_ahead = (7 - now.weekday()) % 7 or 7
-        next_monday = now + datetime.timedelta(days=days_ahead)
-        monday_9am = next_monday.replace(hour=9, minute=0, second=0, microsecond=0)
-        params["departure_time"] = int(monday_9am.timestamp())
-
     try:
-        r = requests.get(GOOGLE_MAPS_API_URL, params=params, timeout=10)
+        r = requests.get(OLA_DIRECTIONS_URL, params=params, timeout=10)
         r.raise_for_status()
         data = r.json()
-        if not data.get("rows") or not data["rows"][0].get("elements"):
-            logger.warning("Google Maps: empty response for mode=%s", mode)
+        if data.get("status") != "OK" or not data.get("routes"):
+            logger.warning("Ola Maps: status=%s mode=%s", data.get("status"), mode)
             return None
-        element = data["rows"][0]["elements"][0]
-        if element["status"] != "OK":
-            logger.warning("Google Maps: status=%s for %s mode", element["status"], mode)
-            return None
-        duration = element.get("duration_in_traffic") or element.get("duration")
-        return round(duration["value"] / 60, 1)  # seconds → minutes
+        leg = data["routes"][0]["legs"][0]
+        # duration_in_traffic preferred for driving; duration for transit/walking
+        duration = leg.get("duration_in_traffic") or leg.get("duration")
+        if isinstance(duration, dict):
+            secs = duration.get("value", 0)
+        else:
+            secs = int(duration or 0)
+        return round(secs / 60, 1)
     except Exception:
-        logger.exception("Google Maps API call failed")
+        logger.exception("Ola Maps API failed for mode=%s", mode)
         return None
 
 
+# ── OpenRouteService ─────────────────────────────────────────
+
+def _ors_minutes(olat, olng, dlat, dlng, mode: str) -> float | None:
+    """Query OpenRouteService. Returns minutes or None on failure."""
+    key = _ors_key()
+    if not key:
+        return None
+    profile = _ORS_PROFILE.get(mode, "foot-walking")
+    url = ORS_DIRECTIONS_URL.format(profile=profile)
+    headers = {
+        "Authorization": key,
+        "Content-Type":  "application/json",
+    }
+    body = {
+        "coordinates": [[olng, olat], [dlng, dlat]],  # ORS uses [lng, lat]
+        "units": "km",
+    }
+    try:
+        r = requests.post(url, headers=headers, json=body, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        secs = data["routes"][0]["summary"]["duration"]
+        return round(secs / 60, 1)
+    except Exception:
+        logger.exception("ORS API failed for mode=%s", mode)
+        return None
+
+
+# ── Main entry point ─────────────────────────────────────────
+
 def get_travel_time(
-    orig_lat: float,
-    orig_lng: float,
-    dest_lat: float,
-    dest_lng: float,
+    olat: float, olng: float,
+    dlat: float, dlng: float,
     mode: str,
     conn: sqlite3.Connection,
-) -> tuple[float, str]:
+) -> tuple[float, str, float | None]:
     """
-    Return (travel_time_minutes, source) where source is "gmaps" or "heuristic".
-    Results are cached in SQLite.
+    Returns (total_minutes, source, walk_minutes).
+
+    For transit: total_minutes = Ola Maps door-to-door transit time.
+                 walk_minutes  = ORS walking time (supplement — how long
+                                 if you had to walk the whole way).
+    source: "ola", "ola+ors", "ors", "heuristic", "cached"
+    walk_minutes is None for non-transit modes.
     """
     _init_cache(conn)
-    key = _cache_key(orig_lat, orig_lng, dest_lat, dest_lng, mode)
-
+    key = _cache_key(olat, olng, dlat, dlng, mode)
     cached = _get_cached(conn, key)
-    if cached is not None:
-        return cached, "cached"
+    if cached:
+        return cached[0], "cached", cached[1]
 
-    # Try Google Maps first
-    minutes = _gmaps_minutes(orig_lat, orig_lng, dest_lat, dest_lng, mode)
-    source = "gmaps"
+    walk_minutes = None
+    source = "heuristic"
+    minutes = None
 
+    # ── Transit: Ola Maps (door-to-door) + ORS walking supplement
+    if mode == "transit":
+        minutes = _ola_minutes(olat, olng, dlat, dlng, "transit")
+        if minutes:
+            source = "ola"
+        # Always get walking time via ORS as a reference
+        walk_minutes = _ors_minutes(olat, olng, dlat, dlng, "walking")
+        if walk_minutes and minutes:
+            source = "ola+ors"
+
+    # ── Driving / two_wheeler: Ola Maps
+    elif mode in ("driving", "two_wheeler", "company_cab"):
+        minutes = _ola_minutes(olat, olng, dlat, dlng, mode)
+        if minutes:
+            source = "ola"
+        else:
+            # ORS fallback for driving
+            minutes = _ors_minutes(olat, olng, dlat, dlng, mode)
+            if minutes:
+                source = "ors"
+
+    # ── Walking: ORS
+    elif mode == "walking":
+        minutes = _ors_minutes(olat, olng, dlat, dlng, "walking")
+        if minutes:
+            source = "ors"
+        walk_minutes = minutes
+
+    # ── Heuristic fallback
     if minutes is None:
-        # Fallback to heuristic
-        dist_km = haversine((orig_lat, orig_lng), (dest_lat, dest_lng), unit=Unit.KILOMETERS)
+        dist_km = haversine((olat, olng), (dlat, dlng), unit=Unit.KILOMETERS)
         minutes = _heuristic_minutes(dist_km, mode)
         source = "heuristic"
+        if mode == "transit" and walk_minutes is None:
+            walk_minutes = _heuristic_minutes(dist_km, "walking")
 
-    _set_cached(conn, key, minutes, source)
-    return minutes, source
+    _set_cached(conn, key, minutes, walk_minutes, source)
+    return minutes, source, walk_minutes

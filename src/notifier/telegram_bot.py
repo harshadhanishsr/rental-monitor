@@ -26,15 +26,23 @@ def _configured() -> bool:
     return bool(os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID"))
 
 
-def format_message(listing: Listing, zone: str, distance_km: float | None) -> str:
+def format_message(listing: Listing, zone: str, distance_km: float | None, mode: str = "solo") -> str:
+    """
+    mode = "solo"  → single person listing (🏠)
+    mode = "group" → shared listing for group search (🏘) — use format_group_message instead
+    """
     dist_str = f"{distance_km:.1f}km" if distance_km is not None else "dist unknown"
     priority = " ⭐ PRIORITY AREA" if is_priority_locality(listing.address) else ""
     broker_line = "No broker" if "nobroker" in listing.source.lower() else "Check for broker"
     bachelor = "Bachelors OK" if listing.bachelors_allowed else "Occupancy unspecified"
 
+    # Solo listings use house emoji; visually distinct from group listings
+    header_emoji = "🏠"
+    label = "SOLO — FOR YOU ONLY"
+
     lines = [
-        f"🏠 *NEW 1BHK — {zone}* ({dist_str} from office)",
-        "",
+        f"{header_emoji} *{label} | {zone}* ({dist_str} from your office)",
+        "─────────────────────────",
         f"📍 {listing.address}{priority}",
         f"💰 ₹{listing.price:,}/month | {listing.furnishing.title()}",
         f"{bachelor} | {broker_line}",
