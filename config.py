@@ -70,6 +70,42 @@ MAX_RENT = 15_000   # ₹/month  — skip listings above this
 # 3600 = every hour  |  7200 = every 2 hours
 CHECK_INTERVAL_SECONDS = 3600
 
+# ── GROUP MODE ───────────────────────────────────────────────
+# Multiple people looking for a place together, each with a different workplace?
+# Set GROUP_MODE = True and fill in GROUP_MEMBERS below.
+# The system will find the geographically fairest location for the whole group
+# and show each person's individual commute distance in every alert.
+#
+# When GROUP_MODE is True, OFFICE_LAT/OFFICE_LNG above are IGNORED —
+# the optimal search centre is automatically calculated from GROUP_MEMBERS.
+
+GROUP_MODE = False   # Set to True to enable group search
+
+GROUP_MEMBERS = [
+    # Add one entry per person. Name is used in alerts.
+    # Get coordinates: https://maps.google.com → right-click on your office → "What's here?"
+    {
+        "name":       "Alice",
+        "office_lat": 13.0827,    # ← replace with your office latitude
+        "office_lng": 80.2707,    # ← replace with your office longitude
+    },
+    {
+        "name":       "Bob",
+        "office_lat": 12.9279,
+        "office_lng": 80.1677,
+    },
+    # Add more people here:
+    # {
+    #     "name":       "Carol",
+    #     "office_lat": 13.0569,
+    #     "office_lng": 80.2425,
+    # },
+]
+
+# Maximum commute each member is willing to accept (km)
+# Listings where ANY member would exceed this are filtered out
+MAX_COMMUTE_PER_PERSON_KM = 15.0
+
 # ── NOTIFICATIONS ─────────────────────────────────────────────
 # Keep secrets in .env — not here.
 # Telegram (free, recommended):

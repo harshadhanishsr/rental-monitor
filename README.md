@@ -82,6 +82,51 @@ python main.py
 
 ---
 
+## Group House Hunting
+
+Multiple people looking for a place together, each working at a different location?
+
+Edit `config.py`:
+
+```python
+GROUP_MODE = True
+
+GROUP_MEMBERS = [
+    {"name": "Alice", "office_lat": 12.9698, "office_lng": 80.1409},
+    {"name": "Bob",   "office_lat": 13.0569, "office_lng": 80.2425},
+    {"name": "Carol", "office_lat": 12.9279, "office_lng": 80.1677},
+]
+
+MAX_COMMUTE_PER_PERSON_KM = 15.0  # listings where anyone exceeds this are skipped
+```
+
+Then run:
+
+```bash
+python group_search.py
+```
+
+**How it works:**
+1. Calculates the **geometric median** of all office locations — the single point that minimises total commute distance across the group (fairer than a simple average)
+2. Scrapes all portals for listings near that centre point
+3. Scores each listing by a **fairness score** = `max_commute + 0.5 × std_deviation` — minimising both the worst commute and the inequality between members
+4. Sends Telegram alerts showing every person's individual commute distance
+
+**Example alert:**
+```
+🏘 GROUP SEARCH — 1 BHK | 7.2 km worst commute
+📍 Adyar, Chennai
+💰 ₹13,000/month | Semi-Furnished
+
+👥 Commute distances:
+  🟢 Alice: 4.1 km
+  🟡 Bob: 7.2 km
+  🟢 Carol: 5.8 km
+  📊 Avg: 5.7 km | Max: 7.2 km
+```
+
+---
+
 ## Config Reference (`config.py`)
 
 | Setting | Default | Description |
@@ -97,6 +142,9 @@ python main.py
 | `NUM_PEOPLE` | `1` | 1 = solo / bachelor, 2+ = family |
 | `FURNISHING` | `"any"` | `"any"` / `"furnished"` / `"semi-furnished"` / `"unfurnished"` |
 | `CHECK_INTERVAL_SECONDS` | `3600` | How often the scheduler runs |
+| `GROUP_MODE` | `False` | Enable group search mode |
+| `GROUP_MEMBERS` | `[]` | List of `{name, office_lat, office_lng}` per person |
+| `MAX_COMMUTE_PER_PERSON_KM` | `15.0` | Filter out listings where any member exceeds this |
 
 ---
 
