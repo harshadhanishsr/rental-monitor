@@ -9,8 +9,8 @@
 # ── REFERENCE LOCATION ───────────────────────────────────────
 # Your office / workplace / any point you want proximity to.
 # Find coordinates: https://maps.google.com → right-click → "What's here?"
-OFFICE_LAT = 12.9698   # latitude
-OFFICE_LNG = 80.1409   # longitude
+OFFICE_LAT = 13.0827   # latitude  (example: Chennai city centre — change to your location)
+OFFICE_LNG = 80.2707   # longitude (right-click on Google Maps → "What's here?" to get yours)
 
 # ── CITY & AREAS ─────────────────────────────────────────────
 CITY = "Chennai"   # City name (used in scraper search queries)
