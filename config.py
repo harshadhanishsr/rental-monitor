@@ -100,19 +100,19 @@ CHECK_INTERVAL_SECONDS = 3600
 # When GROUP_MODE is True, OFFICE_LAT/OFFICE_LNG above are IGNORED —
 # the optimal search centre is automatically calculated from GROUP_MEMBERS.
 
-GROUP_MODE = False   # Solo search for Harsha only
+GROUP_MODE = False   # Set to True to enable group search
 
 GROUP_MEMBERS = [
     {
-        "name":       "Harsha",
-        "office_lat": 12.9698,   # Blackstraw AI, Chromepet
-        "office_lng": 80.1409,
+        "name":       "Person 1",
+        "office_lat": 13.0827,   # Set your real coords in .env (OFFICE_LAT/LNG)
+        "office_lng": 80.2707,
         "transport":  "transit",
     },
     {
-        "name":       "Daddy",
-        "office_lat": 12.9010,   # Wipro, Sholinganallur ELCOT SEZ
-        "office_lng": 80.2278,
+        "name":       "Person 2",
+        "office_lat": 13.0100,   # Second person's office
+        "office_lng": 80.2100,
         "transport":  "transit",
     },
 ]
