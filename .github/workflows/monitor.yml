@@ -1,0 +1,40 @@
+name: Rental Monitor
+
+on:
+  schedule:
+    - cron: '0 * * * *'   # every hour
+  workflow_dispatch:        # manual trigger from GitHub UI
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore database
+        uses: actions/cache@v4
+        with:
+          path: data/rental_monitor.db
+          key: rental-db-${{ github.run_number }}
+          restore-keys: rental-db-
+
+      - name: Run scan cycle
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          OLA_MAPS_API_KEY:   ${{ secrets.OLA_MAPS_API_KEY }}
+          ORS_API_KEY:        ${{ secrets.ORS_API_KEY }}
+          OFFICE_LAT:         ${{ secrets.OFFICE_LAT }}
+          OFFICE_LNG:         ${{ secrets.OFFICE_LNG }}
+          DB_PATH:            data/rental_monitor.db
+        run: python run_once.py
