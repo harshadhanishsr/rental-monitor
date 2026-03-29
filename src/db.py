@@ -5,13 +5,26 @@ from src.models import Listing
 
 
 def get_connection(db_path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript("""
+        CREATE TABLE IF NOT EXISTS listing_tracker (
+            tracking_id  TEXT PRIMARY KEY,
+            address      TEXT,
+            price        INTEGER,
+            url          TEXT,
+            dist_km      REAL,
+            transit_mins REAL,
+            telegram_msg_id INTEGER,
+            status       TEXT DEFAULT 'new',
+            created_at   INTEGER DEFAULT (strftime('%s','now')),
+            updated_at   INTEGER DEFAULT (strftime('%s','now'))
+        );
+
         CREATE TABLE IF NOT EXISTS seen_listings (
             id TEXT NOT NULL,
             source TEXT NOT NULL,
@@ -109,3 +122,48 @@ def get_cached_geocode(conn: sqlite3.Connection, address_hash: str) -> tuple[flo
         (address_hash,)
     ).fetchone()
     return (row[0], row[1]) if row else None
+
+
+# ── Listing tracker ───────────────────────────────────────────
+
+def tracker_add(conn, tracking_id, address, price, url, dist_km, transit_mins):
+    conn.execute(
+        "INSERT OR IGNORE INTO listing_tracker "
+        "(tracking_id, address, price, url, dist_km, transit_mins) VALUES (?,?,?,?,?,?)",
+        (tracking_id, address, price, url, dist_km, transit_mins),
+    )
+    conn.commit()
+
+
+def tracker_set_msg_id(conn, tracking_id, msg_id):
+    conn.execute(
+        "UPDATE listing_tracker SET telegram_msg_id=? WHERE tracking_id=?",
+        (msg_id, tracking_id),
+    )
+    conn.commit()
+
+
+def tracker_set_status(conn, tracking_id, status):
+    conn.execute(
+        "UPDATE listing_tracker SET status=?, updated_at=strftime('%s','now') "
+        "WHERE tracking_id=?",
+        (status, tracking_id),
+    )
+    conn.commit()
+
+
+def tracker_summary(conn) -> dict:
+    rows = conn.execute(
+        "SELECT status, address, price, url, dist_km, transit_mins, updated_at "
+        "FROM listing_tracker WHERE status != 'new' ORDER BY updated_at DESC"
+    ).fetchall()
+    result = {"shortlisted": [], "contacted": [], "passed": []}
+    for r in rows:
+        result.get(r["status"], []).append(dict(r))
+    return result
+
+
+def tracker_get(conn, tracking_id):
+    return conn.execute(
+        "SELECT * FROM listing_tracker WHERE tracking_id=?", (tracking_id,)
+    ).fetchone()

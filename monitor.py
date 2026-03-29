@@ -1,20 +1,21 @@
 """
-Solo rental monitor for Harsha.
+Rental monitor — scrapes every hour, sends new listings to Telegram.
 
-Every hour:
-  - Scrapes all sources for 1BHK listings in Chennai (configured areas)
-  - Filters by price, furnishing, property type
-  - Geocodes and checks within MAX_RADIUS_KM of office
-  - Gets real transit commute time (Ola Maps + ORS)
-  - Sends only NEW listings to Telegram — never repeats a listing
+Each alert has tap-to-track buttons:
+  [⭐ Shortlist]  [📞 Contacted]  [👎 Pass]
 
-Logs to data/monitor.log for review.
+Bot commands:
+  /summary   — all tracked listings
+  /shortlist — shortlisted only
+
+Logs to data/monitor.log
 """
 import io
 import logging
 import os
 import sys
 import time
+import hashlib
 import sqlite3
 from datetime import datetime, timezone
 
@@ -39,13 +40,14 @@ from config import (
     OFFICE_LAT, OFFICE_LNG, MAX_RADIUS_KM,
     PROPERTY_LABEL, CITY, CHECK_INTERVAL_SECONDS,
 )
-from src.db import init_db, get_connection, is_seen, mark_seen
-from src.scheduler import run_all_scrapers, apply_property_filter
-from src.filters.distance_filter import (
-    apply_distance_filter, is_priority_locality,
+from src.db import (
+    init_db, get_connection, is_seen, mark_seen,
+    tracker_add, tracker_set_msg_id,
 )
-from src.notifier import telegram_bot as _tg
+from src.scheduler import run_all_scrapers, apply_property_filter
+from src.filters.distance_filter import apply_distance_filter, is_priority_locality
 from src.travel_time import get_travel_time
+from src.notifier.tracker_bot import send_with_buttons, start_polling
 import requests as _req
 
 DB_PATH = os.environ.get("DB_PATH", "data/rental_monitor.db")
@@ -72,8 +74,8 @@ def _format_alert(listing, dist_km, travel_minutes, walk_minutes, time_source) -
     dist_str = f"{dist_km:.1f}km" if dist_km is not None else "dist unknown"
 
     if travel_minutes is not None:
-        est = "~" if time_source == "heuristic" else ""
-        bar = "🟢" if travel_minutes <= 20 else "🟡" if travel_minutes <= 40 else "🔴"
+        est    = "~" if time_source == "heuristic" else ""
+        bar    = "🟢" if travel_minutes <= 20 else "🟡" if travel_minutes <= 40 else "🔴"
         commute = f"{bar} {est}{travel_minutes:.0f} min by transit"
         if walk_minutes is not None:
             commute += f" (~{walk_minutes:.0f} min walking)"
@@ -81,7 +83,7 @@ def _format_alert(listing, dist_km, travel_minutes, walk_minutes, time_source) -
         commute = f"{dist_str} from office"
 
     lines = [
-        f"🏠 *New 1BHK* | {dist_str} from office{priority}",
+        f"🏠 *New {PROPERTY_LABEL}* | {dist_str} from office{priority}",
         "─────────────────────────────",
         f"📍 {listing.address}",
         f"💰 ₹{listing.price:,}/month | {listing.furnishing.title()}",
@@ -108,17 +110,14 @@ def run_cycle(conn: sqlite3.Connection):
 
     raw      = run_all_scrapers()
     filtered = apply_property_filter(raw)
-    logger.info("Scraped %d raw → %d after property filter", len(raw), len(filtered))
+    logger.info("Scraped %d raw -> %d after property filter", len(raw), len(filtered))
 
     candidates = apply_distance_filter(
         filtered, conn, OFFICE_LAT, OFFICE_LNG, max_radius_km=MAX_RADIUS_KM
     )
     logger.info("%d within %.0fkm of office", len(candidates), MAX_RADIUS_KM)
 
-    # Only listings with confirmed coords
     candidates = [(l, z, d) for l, z, d in candidates if d is not None]
-
-    # Sort: priority area first, then by distance, then price
     candidates.sort(key=lambda x: (
         0 if is_priority_locality(x[0].address) else 1,
         x[2],
@@ -129,34 +128,38 @@ def run_cycle(conn: sqlite3.Connection):
     for listing, zone, dist_km in candidates:
         seen_key = f"{listing.source}_{listing.id}"
         if is_seen(conn, seen_key, "solo"):
-            continue   # already alerted — skip
+            continue
 
-        # Real transit time from listing → Harsha's office
         mins, src, walk = get_travel_time(
             listing.lat, listing.lng,
             OFFICE_LAT, OFFICE_LNG,
             "transit", conn,
         )
 
-        # Skip: >10km AND transit >60 min
-        if dist_km is not None and dist_km > 10.0:
-            if mins is None or mins > 60:
-                logger.info(
-                    "Skipped (far + slow): %s | %.1fkm | %s min",
-                    listing.address[:45], dist_km, f"{mins:.0f}" if mins else "?"
-                )
-                mark_seen(conn, seen_key, "solo")  # don't retry it
-                continue
+        # Skip listings >10km unless transit is under 60 min
+        if dist_km > 10.0 and (mins is None or mins > 60):
+            logger.info("Skipped (far+slow): %s | %.1fkm | %s min",
+                        listing.address[:45], dist_km, f"{mins:.0f}" if mins else "?")
+            mark_seen(conn, seen_key, "solo")
+            continue
 
-        msg = _format_alert(listing, dist_km, mins, walk, src)
-        _tg_send(msg)
+        msg         = _format_alert(listing, dist_km, mins, walk, src)
+        tracking_id = hashlib.sha256(f"{listing.source}:{listing.id}".encode()).hexdigest()[:16]
+
+        # Store in tracker DB before sending
+        tracker_add(conn, tracking_id, listing.address, listing.price,
+                    listing.url, dist_km, mins)
+
+        # Send with inline keyboard buttons
+        msg_id = send_with_buttons(msg, tracking_id)
+        if msg_id:
+            tracker_set_msg_id(conn, tracking_id, msg_id)
+
         mark_seen(conn, seen_key, "solo")
         new_count += 1
-        logger.info(
-            "Alerted: %s | %.1fkm | %s min transit (%s)",
-            listing.address[:50], dist_km,
-            f"{mins:.0f}" if mins else "?", src,
-        )
+        logger.info("Alerted: %s | %.1fkm | %s min (%s)",
+                    listing.address[:50], dist_km,
+                    f"{mins:.0f}" if mins else "?", src)
 
     if new_count == 0:
         logger.info("No new listings this cycle.")
@@ -169,11 +172,14 @@ def main():
     conn = get_connection(DB_PATH)
     init_db(conn)
 
+    # Start button/command handler in background
+    start_polling(conn)
+
     _tg_send(
         f"🏠 *Rental Monitor started*\n"
-        f"Searching {PROPERTY_LABEL} in {CITY} — within {MAX_RADIUS_KM:.0f}km of your office\n"
-        f"Scanning every {CHECK_INTERVAL_SECONDS // 60} min. "
-        f"Only new listings will be sent — no repeats."
+        f"Searching {PROPERTY_LABEL} in {CITY} — within {MAX_RADIUS_KM:.0f}km\n"
+        f"Tap *⭐ / 📞 / 👎* on any listing to track it.\n"
+        f"Send */summary* anytime to see your tracker."
     )
     logger.info("Monitor started. Scanning every %ds.", CHECK_INTERVAL_SECONDS)
 
@@ -187,7 +193,7 @@ def main():
         try:
             run_cycle(conn)
         except Exception:
-            logger.exception("Unhandled error in cycle — will retry next interval")
+            logger.exception("Unhandled error in cycle — retrying next interval")
 
 
 if __name__ == "__main__":
