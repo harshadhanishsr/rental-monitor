@@ -87,7 +87,7 @@ CHECK_INTERVAL_SECONDS = 3600
 # When GROUP_MODE is True, OFFICE_LAT/OFFICE_LNG above are IGNORED —
 # the optimal search centre is automatically calculated from GROUP_MEMBERS.
 
-GROUP_MODE = True   # Set to True to enable group search
+GROUP_MODE = False   # Solo search for Harsha only
 
 GROUP_MEMBERS = [
     {

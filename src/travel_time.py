@@ -75,6 +75,10 @@ def _init_cache(conn: sqlite3.Connection) -> None:
             created_at  INTEGER DEFAULT (strftime('%s','now'))
         )
     """)
+    # Migrate older DBs that don't have the walk_minutes column
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(travel_time_cache)")}
+    if "walk_minutes" not in cols:
+        conn.execute("ALTER TABLE travel_time_cache ADD COLUMN walk_minutes REAL")
     conn.commit()
 
 
