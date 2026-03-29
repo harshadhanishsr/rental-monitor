@@ -23,7 +23,7 @@ CITY = "Chennai"   # City name (used in scraper search queries)
 
 # Localities to actively search. Scrapers will target each of these.
 SEARCH_AREAS = [
-    # Areas between Chromepet and Sholinganallur — the sweet spot for both offices
+    # Original areas
     "Pallikaranai",
     "Medavakkam",
     "Keelkattalai",
@@ -34,17 +34,30 @@ SEARCH_AREAS = [
     "Ullagaram",
     "Chromepet",
     "Pallavaram",
+    # New areas (user-requested)
+    "Thoraipakkam",
+    "Kovilambakkam",
+    "Velachery",
+    "St Thomas Mount",
+    "Pammal",
+    "Pozhichalur",
+    "Kolapakkam",
+    "Sembakkam",
+    "Mudichur",
 ]
 
 PRIORITY_LOCALITIES = {
     "pallikaranai", "medavakkam", "keelkattalai", "nanganallur",
     "adambakkam", "perumbakkam", "ullagaram", "chromepet",
     "pallavaram", "sholinganallur", "puzhuthivakkam",
+    # New
+    "kovilambakkam", "velachery", "pammal", "pozhichalur",
+    "kolapakkam", "st thomas mount", "thoraipakkam", "sembakkam",
 }
 
 # ── SEARCH RADIUS ─────────────────────────────────────────────
 # Only listings within this distance from OFFICE_LAT/LNG are alerted.
-MAX_RADIUS_KM = 10.0
+MAX_RADIUS_KM = 12.0
 
 # Zone thresholds (km) — used in alert messages
 ZONE_SUPER_CLOSE_KM = 2.0    # ≤ this → "SUPER CLOSE"

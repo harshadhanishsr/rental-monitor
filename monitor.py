@@ -138,6 +138,16 @@ def run_cycle(conn: sqlite3.Connection):
             "transit", conn,
         )
 
+        # Skip: >10km AND transit >60 min
+        if dist_km is not None and dist_km > 10.0:
+            if mins is None or mins > 60:
+                logger.info(
+                    "Skipped (far + slow): %s | %.1fkm | %s min",
+                    listing.address[:45], dist_km, f"{mins:.0f}" if mins else "?"
+                )
+                mark_seen(conn, seen_key, "solo")  # don't retry it
+                continue
+
         msg = _format_alert(listing, dist_km, mins, walk, src)
         _tg_send(msg)
         mark_seen(conn, seen_key, "solo")
