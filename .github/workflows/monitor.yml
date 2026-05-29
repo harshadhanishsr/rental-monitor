@@ -11,7 +11,7 @@ concurrency:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
@@ -19,8 +19,9 @@ jobs:
         with:
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
       - run: uv sync
-      - run: uv run playwright install --with-deps chromium
       - name: Restore state branch
         run: |
           git config user.name  "rental-monitor-bot"
@@ -42,3 +43,11 @@ jobs:
         if: always()
         run: |
           uv run python -c "import datetime; from pathlib import Path; from src.state.branch_sync import commit_and_push; commit_and_push(Path('data/rental_monitor.db'), f\"state: {datetime.datetime.now(datetime.UTC).isoformat()}\")"
+      - name: Upload state artifact (fallback)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: state-db-${{ github.run_id }}
+          path: data/rental_monitor.db
+          retention-days: 7
+          if-no-files-found: ignore
