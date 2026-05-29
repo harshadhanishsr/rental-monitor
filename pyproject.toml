@@ -1,0 +1,32 @@
+[project]
+name = "rental-monitor"
+version = "2.0.0-dev"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx[http2]>=0.27",
+    "curl-cffi>=0.7",
+    "playwright>=1.47",
+    "selectolax>=0.3.21",
+    "pydantic>=2.7",
+    "tenacity>=8.3",
+    "aiosqlite>=0.20",
+    "python-dotenv>=1.0",
+    "geopy>=2.4",
+    "haversine>=2.8",
+    "requests>=2.32",
+    "twilio>=9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.1",
+    "pytest-asyncio>=0.23",
+    "pytest-mock>=3.14",
+    "respx>=0.21",
+    "coverage>=7.5",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = ["smoke: live-fetch integration tests (opt-in)"]
+testpaths = ["tests"]
