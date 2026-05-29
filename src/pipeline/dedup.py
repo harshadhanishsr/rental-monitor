@@ -51,10 +51,10 @@ def geohash(lat: float, lng: float, precision: int = 7) -> str:
 
 def _norm_addr(addr: str) -> str:
     s = addr.lower()
-    s = re.sub(r"[^a-z\s]", " ", s)          # strip punctuation first
+    s = re.sub(r"\d+[a-z]?[/-]?\d*", " ", s)  # strip building numbers
     for pattern, replacement in _ADDR_ABBREVS:
         s = re.sub(pattern, replacement, s)
-    s = re.sub(r"\d+[a-z]?[/-]?\d*", " ", s)  # strip building numbers
+    s = re.sub(r"[^a-z\s]", " ", s)          # strip remaining non-alpha
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
@@ -83,6 +83,8 @@ def fingerprint(l: Listing) -> str:
 
 
 def merge(listings: list[Listing]) -> Listing:
+    if not listings:
+        raise ValueError("merge() requires at least one listing")
     best = sorted(listings, key=lambda x: SOURCE_RANK.get(x.source, 99))[0]
     others = [l for l in listings if l.id != best.id]
     return best.model_copy(update={

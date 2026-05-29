@@ -25,3 +25,9 @@ def test_no_latlng_falls_back_to_address():
     b = B.model_copy(update={"lat": None, "lng": None,
                              "address": "123 Foo Street Pallavaram Chennai"})
     assert fingerprint(a) == fingerprint(b)
+
+
+def test_merge_empty_raises():
+    import pytest
+    with pytest.raises(ValueError):
+        merge([])
