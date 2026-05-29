@@ -30,3 +30,4 @@ dev = [
 asyncio_mode = "auto"
 markers = ["smoke: live-fetch integration tests (opt-in)"]
 testpaths = ["tests"]
+pythonpath = ["."]
