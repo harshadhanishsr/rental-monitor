@@ -9,6 +9,33 @@ _JSON_LD = re.compile(
     r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', re.S)
 _SPID = re.compile(r"spid-([A-Z]\d+)")
 
+# 99acres uses internal numeric city IDs in their search URLs. These have been
+# stable for years; add more here or override per-deploy with the
+# NINETYNINE_ACRES_CITY_ID env var if you need a city not listed.
+_CITY_IDS: dict[str, int] = {
+    "chennai":   32,
+    "bangalore": 20,
+    "bengaluru": 20,
+    "mumbai":    12,
+    "pune":      11,
+    "hyderabad":  8,
+    "delhi":      1,
+    "new delhi":  1,
+    "gurgaon":    3,
+    "gurugram":   3,
+    "noida":      4,
+    "kolkata":    2,
+    "ahmedabad":  9,
+}
+
+
+def _city_id(city: str) -> int | None:
+    import os
+    env = os.environ.get("NINETYNINE_ACRES_CITY_ID")
+    if env and env.isdigit():
+        return int(env)
+    return _CITY_IDS.get(city.lower().strip())
+
 
 class NinetyNineAcres(SourceAdapter):
     """99acres returns server-rendered HTML with JSON-LD blocks.
@@ -24,14 +51,19 @@ class NinetyNineAcres(SourceAdapter):
     needs_browser = False  # JSON-LD fast path; falls through to curl_cffi at runtime
 
     def _urls(self, cfg) -> list[str]:
-        from config import MAX_RENT, MIN_RENT, PROPERTY_SLUG
-        # 99acres uses numeric city id; 32 = Chennai. Plumbing the lookup is
-        # out of scope for v2 cut — keep Chennai hard-coded until the registry
-        # learns to map names to ids.
+        import logging
+        from config import CITY, MAX_RENT, MIN_RENT, PROPERTY_SLUG
         beds = PROPERTY_SLUG[0]
+        cid = _city_id(CITY)
+        if cid is None:
+            logging.getLogger("99acres").warning(
+                "no 99acres city id for %r — skipping. Set "
+                "NINETYNINE_ACRES_CITY_ID in .env to override.", CITY)
+            return []
+        slug = CITY.lower().replace(" ", "-")
         return [(
-            f"https://www.99acres.com/search/property/rent/residential/chennai"
-            f"?city=32&preference=R&bedroom={beds}"
+            f"https://www.99acres.com/search/property/rent/residential/{slug}"
+            f"?city={cid}&preference=R&bedroom={beds}"
             f"&budget_max={MAX_RENT}&budget_min={MIN_RENT}"
         )]
 

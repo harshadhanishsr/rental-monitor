@@ -295,6 +295,19 @@ def main() -> None:
         lat = _ask_float("Latitude (decimal)", cur.get("OFFICE_LAT"))
         lng = _ask_float("Longitude (decimal)", cur.get("OFFICE_LNG"))
 
+    # Some sources need a city-specific numeric ID we maintain in a small map.
+    # Warn now if the chosen city isn't covered so the user isn't surprised
+    # when 99acres shows ❌ in the daily digest.
+    try:
+        from src.sources.ninetynine_acres import _city_id
+        if _city_id(city) is None:
+            print(f"  ⚠ 99acres has no city ID for '{city}' — that source")
+            print(f"    will be skipped. Set NINETYNINE_ACRES_CITY_ID=<n> in")
+            print(f"    .env to override (find your city's ID in a 99acres")
+            print(f"    URL like ?city=20 for Bangalore).\n")
+    except Exception:
+        pass
+
     extra_default = ", ".join(cur_areas[1:]) if len(cur_areas) > 1 else ""
     extra_raw = _ask(
         "Other nearby areas to also search (comma-separated, optional)",

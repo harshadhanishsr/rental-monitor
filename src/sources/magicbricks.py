@@ -18,10 +18,11 @@ class MagicBricks(SourceAdapter):
     needs_browser = False
 
     def _urls(self, cfg) -> list[str]:
-        from config import SEARCH_AREAS, PROPERTY_SLUG
+        from config import SEARCH_AREAS, PROPERTY_SLUG, CITY
         beds = PROPERTY_SLUG[0]
+        city = CITY.lower().replace(" ", "-")
         return [
-            f"https://www.magicbricks.com/{beds}-bhk-flats-for-rent-in-{a.lower().replace(' ', '-')}-chennai-pppfr"
+            f"https://www.magicbricks.com/{beds}-bhk-flats-for-rent-in-{a.lower().replace(' ', '-')}-{city}-pppfr"
             for a in SEARCH_AREAS
         ]
 
