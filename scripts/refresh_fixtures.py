@@ -9,6 +9,10 @@ URLS = {
         ("pallavaram",
          "https://property.sulekha.com/1-bhk-apartments-flats-for-rent/chennai/pallavaram"),
     ],
+    "squareyards": [
+        ("pallavaram",
+         "https://www.squareyards.com/rent/1-bhk-for-rent-in-pallavaram-chennai"),
+    ],
 }
 
 
