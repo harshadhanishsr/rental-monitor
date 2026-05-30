@@ -11,6 +11,11 @@ from src.core.http import AsyncHttp
 from src.core.ratelimit import TokenBucket
 from src.models import Listing, RunStats
 from src.pipeline.dedup import fingerprint, merge
+from src.pipeline.enrich import (
+    already_alerted, attach_commute, is_priority, mark_alerted,
+    passes_distance_filter, passes_property_filter, upsert_listing,
+)
+from src.pipeline.rank import fit_score
 from src.sources.base import SourceAdapter, SourceCtx
 from src.state.db import connect, migrate
 
@@ -50,6 +55,7 @@ async def _run_source(source: SourceAdapter, ctx: SourceCtx,
 
 
 async def run_cycle(cfg: EngineConfig) -> RunStats:
+    from config import MAX_RADIUS_KM, MAX_RENT, MIN_RENT, OFFICE_LAT, OFFICE_LNG
     stats = RunStats(started_at=int(time.time()))
     t0 = time.monotonic()
     queue: asyncio.Queue[Listing | None] = asyncio.Queue()
@@ -73,10 +79,18 @@ async def run_cycle(cfg: EngineConfig) -> RunStats:
                 l = await queue.get()
                 if l is None:
                     break
+                stats.raw_count += 1
+                if not passes_property_filter(l):
+                    continue
+                ok, _ = passes_distance_filter(l, OFFICE_LAT, OFFICE_LNG, MAX_RADIUS_KM)
+                if not ok:
+                    continue
+                stats.after_filter += 1
                 fp = fingerprint(l)
                 l = l.model_copy(update={"fingerprint": fp})
                 fingerprints.setdefault(fp, []).append(l)
-                stats.raw_count += 1
+                stats.per_source[l.source]["kept"] = (
+                    stats.per_source[l.source].get("kept", 0) + 1)
 
         consumer = asyncio.create_task(consume_and_dedup())
 
@@ -87,14 +101,31 @@ async def run_cycle(cfg: EngineConfig) -> RunStats:
         await queue.put(None)
         await consumer
 
+        # Merge each fingerprint group into one canonical Listing
         deduped = [merge(group) for group in fingerprints.values()]
-        stats.after_filter = stats.raw_count
         stats.after_dedup = len(deduped)
 
+        # Enrich + rank + (optionally) alert
+        now_ts = int(time.time())
+        scored: list[tuple[int, Listing]] = []
+        for l in deduped:
+            first_seen, confirm = await upsert_listing(db, l, now_ts)
+            travel_min = await attach_commute(l, db)
+            score = fit_score(
+                l, travel_min=travel_min, first_seen_ts=first_seen,
+                now_ts=now_ts, confirm_count=confirm,
+                priority=is_priority(l), max_rent=MAX_RENT, min_rent=MIN_RENT,
+            )
+            scored.append((score, l))
+        scored.sort(key=lambda x: x[0], reverse=True)
+
         if cfg.alert_fn:
-            for l in deduped:
+            for score, l in scored:
+                if await already_alerted(db, l.fingerprint):
+                    continue
                 msg_id = await cfg.alert_fn(l, stats)
                 if msg_id is not None:
+                    await mark_alerted(db, l.fingerprint, msg_id, now_ts)
                     stats.alerted += 1
 
         stats.duration_ms = int((time.monotonic() - t0) * 1000)
