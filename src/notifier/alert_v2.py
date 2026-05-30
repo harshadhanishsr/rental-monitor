@@ -30,7 +30,7 @@ def _format(l: Listing) -> str:
 
 
 def _send(l: Listing) -> int | None:
-    from src.notifier.tracker_bot import send_with_buttons
+    from src.notifier.telegram import send_with_buttons
     return send_with_buttons(_format(l), _tracking_id(l))
 
 
