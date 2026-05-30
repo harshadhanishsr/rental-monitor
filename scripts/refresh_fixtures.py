@@ -37,6 +37,13 @@ URLS: dict[str, dict] = {
              "https://www.99acres.com/search/property/rent/residential/chennai?city=32&preference=R&bedroom=1&budget_max=15000"),
         ],
     },
+    "magicbricks": {
+        "cffi": True,
+        "pages": [
+            ("pallavaram",
+             "https://www.magicbricks.com/1-bhk-flats-for-rent-in-pallavaram-chennai-pppfr"),
+        ],
+    },
 }
 
 
