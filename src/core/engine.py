@@ -15,6 +15,7 @@ from src.pipeline.enrich import (
     already_alerted, attach_commute, is_priority, mark_alerted,
     passes_distance_filter, passes_property_filter, upsert_listing,
 )
+from src.pipeline.prune import enqueue_pending, process_pending, prune
 from src.pipeline.rank import fit_score
 from src.sources.base import SourceAdapter, SourceCtx
 from src.state.db import connect, migrate
@@ -64,6 +65,9 @@ async def run_cycle(cfg: EngineConfig) -> RunStats:
     async with AsyncHttp(proxy=cfg.proxy) as http, \
                connect(cfg.db_path) as db:
         await migrate(db)
+        if cfg.alert_fn:
+            stats.alerted += await process_pending(
+                db, cfg.alert_fn, stats, int(time.time()))
         ctxs = [
             SourceCtx(
                 http=http,
@@ -123,10 +127,19 @@ async def run_cycle(cfg: EngineConfig) -> RunStats:
             for score, l in scored:
                 if await already_alerted(db, l.fingerprint):
                     continue
-                msg_id = await cfg.alert_fn(l, stats)
+                try:
+                    msg_id = await cfg.alert_fn(l, stats)
+                except Exception as e:
+                    msg_id, err = None, str(e)[:200]
+                else:
+                    err = None
                 if msg_id is not None:
                     await mark_alerted(db, l.fingerprint, msg_id, now_ts)
                     stats.alerted += 1
+                else:
+                    await enqueue_pending(db, l.fingerprint, now_ts, err)
+
+        await prune(db, now_ts)
 
         stats.duration_ms = int((time.monotonic() - t0) * 1000)
         await db.execute(
