@@ -44,6 +44,13 @@ URLS: dict[str, dict] = {
              "https://www.magicbricks.com/1-bhk-flats-for-rent-in-pallavaram-chennai-pppfr"),
         ],
     },
+    "olx": {
+        "cffi": True,
+        "pages": [
+            ("pallavaram",
+             "https://www.olx.in/items/q-1-bhk-rent-pallavaram?filter=price_max_15000"),
+        ],
+    },
 }
 
 
