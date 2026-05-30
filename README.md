@@ -21,32 +21,23 @@ cd rental-monitor
 uv sync
 ```
 
-**2. Create your `.env` file**
+**2. Run the setup wizard**
 ```bash
-cp .env.example .env
+uv run python configure.py
 ```
-Fill in:
-```
-TELEGRAM_BOT_TOKEN=...       # From @BotFather on Telegram (free)
-TELEGRAM_CHAT_ID=...         # Your chat ID
-OFFICE_LAT=13.0827           # Your office coordinates
-OFFICE_LNG=80.2707
-# Optional:
-PROXY_URL=                   # Set to bypass regional blocks (httpx-compatible URL)
-LLM_API_KEY=                 # Reserved for the v2.1 LLM enrichment layer (no-op when blank)
-```
+Plain-English prompts for city, area, radius, bedrooms, occupants, budget, cycle frequency, and Telegram bot token. The wizard:
+- geocodes the area name (no API key needed)
+- writes `config.py` and `.env`
+- patches the GitHub Actions cron interval
+- sets the Telegram secrets in GitHub via `gh` (if installed)
+- commits + pushes so the cron starts immediately
+- sends a test message to your Telegram to confirm
 
-**3. Configure your search** — edit `config.py`:
-```python
-CITY = "Chennai"
-SEARCH_AREAS = ["Pallikaranai", "Velachery", ...]   # Areas to search
-MAX_RADIUS_KM = 12.0                                 # Max distance from office
-PROPERTY_TYPE = "1bhk"                               # 1bhk / 2bhk / 1rk
-MIN_RENT = 3000                                      # Budget range (Rs/month)
-MAX_RENT = 15000
-```
+Safe to re-run any time you want to change something (move cities, raise budget, switch to 2BHK, etc.).
 
-**4. Run**
+**Advanced (optional):** if you'd rather hand-edit, `.env.example` shows the env vars and `config.py` shows the search constants. The wizard just writes those files for you.
+
+**3. Run**
 
 One-shot (cron, CI):
 ```bash
