@@ -1,110 +1,195 @@
 # Rental Monitor
 
-Automatically scrapes rental listings across Chennai (or any Indian city), filters by your budget and commute time, and sends new matches to Telegram. Dedups across portals so the same flat never alerts twice.
+Get Telegram alerts the moment new rentals show up in your area. Set it up once with a 2-minute wizard — it runs on GitHub's servers forever, even when your laptop is off.
 
 ## What it does
 
-- Async scrape of Sulekha, SquareYards, 99acres, MagicBricks, OLX, DuckDuckGo every hour
-- Filters by property type, price range, and distance from your office (haversine)
-- Dedups across sources via geohash + price-bucket fingerprint
-- Per-cycle ranking by `fit_score` (commute, price, locality, freshness, confirmations)
-- Per-source circuit breaker + token-bucket politeness; one source crashing never aborts the cycle
-- Pending-alerts retry queue + automatic prune of stale rows
-- Daily Telegram digest (top-5 + per-source health + silent-source detector)
+- Every hour, scans 6 rental sites (Sulekha, SquareYards, 99acres, MagicBricks, OLX, DuckDuckGo) for listings in your area
+- Filters by city, area, distance, bedrooms, budget, and furnishing
+- Skips duplicates — if the same flat is on 3 sites, you get one alert (not three)
+- Ranks by best fit: closer + cheaper + confirmed on multiple sites = higher score
+- Sends each match to Telegram with price, address, and a link
+- Every morning at 9:00 IST you get a digest of the top picks from the last 24h
 
-## Setup
+## What an alert looks like
 
-**1. Clone and install**
+```
+🏠 1 BHK — Pallavaram, Chennai
+₹12,500/month  ·  Sulekha
+1.2 km from your location  ·  furnished
+https://property.sulekha.com/...
+```
+
+If multiple sites carry the same flat, the alert says "seen on 3" and you only get pinged once.
+
+## Setup — 3 steps, ~5 minutes
+
+You need: a Telegram account, a GitHub account, Python 3.11+, and [uv](https://docs.astral.sh/uv/) (install in one line — see uv's site).
+
+### Step 1 — Get the repo on your GitHub
+
+If you're not the original owner, **fork it** first (button at top-right of GitHub), then clone your fork:
+
 ```bash
-git clone https://github.com/harshadhanishsr/rental-monitor
+git clone https://github.com/<your-username>/rental-monitor
 cd rental-monitor
 uv sync
 ```
 
-**2. Run the setup wizard**
+### Step 2 — Get your Telegram bot token
+
+1. Open Telegram → search **@BotFather**
+2. Send `/newbot` → pick a name → pick a username ending in `bot`
+3. BotFather replies with a token like `123456:ABC-DEF...` — **save it**
+4. Open your new bot in Telegram and send it any message (`hi` works)
+5. In your browser, open `https://api.telegram.org/bot<TOKEN>/getUpdates` (paste your real token in place of `<TOKEN>`)
+6. Find `"chat":{"id":12345678}` in the page — **that number is your chat ID**
+
+### Step 3 — Run the wizard
+
 ```bash
 uv run python configure.py
 ```
-Plain-English prompts for city, area, radius, bedrooms, occupants, budget, cycle frequency, and Telegram bot token. The wizard:
-- geocodes the area name (no API key needed)
-- writes `config.py` and `.env`
-- patches the GitHub Actions cron interval
-- sets the Telegram secrets in GitHub via `gh` (if installed)
-- commits + pushes so the cron starts immediately
-- sends a test message to your Telegram to confirm
 
-Safe to re-run any time you want to change something (move cities, raise budget, switch to 2BHK, etc.).
+It asks 11 plain questions:
 
-**Advanced (optional):** if you'd rather hand-edit, `.env.example` shows the env vars and `config.py` shows the search constants. The wizard just writes those files for you.
+| Question | Example answer |
+|---|---|
+| Which city? | `Chennai` |
+| Main neighbourhood? | `Pallavaram` |
+| Other nearby areas to also search? | `Chromepet, Tambaram` *(optional)* |
+| Maximum distance (km) from your area? | `5` |
+| Bedrooms? | `1bhk` *(or `2bhk` / `3bhk` / `1rk`)* |
+| How many people will live there? | `2` |
+| Furnishing? | `any` *(or `furnished` / `semi-furnished` / `unfurnished`)* |
+| Minimum monthly rent (₹)? | `5000` |
+| Maximum monthly rent (₹)? | `15000` |
+| Check every how many hours? | `1` |
+| Telegram bot token + chat ID | *(paste what you got in step 2)* |
 
-**3. Run**
+The wizard then:
+- Geocodes your area name (no API key needed)
+- Writes your settings to `config.py` and `.env`
+- Sets the GitHub Actions secrets (via `gh` CLI if you have it)
+- Updates the cron schedule to your chosen interval
+- Commits + pushes — GitHub starts running it immediately
+- Sends a "✅ Rental monitor configured" test message to your Telegram
 
-One-shot (cron, CI):
-```bash
-uv run python run_once.py
-```
+**That's it.** You can close your laptop. GitHub runs the scan on schedule forever.
 
-Long-running loop:
-```bash
-uv run python monitor.py
-```
+## Changing your settings later
 
-Daily digest (top-5 + source health):
-```bash
-uv run python run_once.py --digest
-```
-
-## Cutover from v1
-
-If you're upgrading from the v1 schema (`seen_listings`), seed the v2 DB so old items don't re-alert under the new fingerprint:
+Run the wizard again:
 
 ```bash
-uv run python scripts/seed_v2_seen.py legacy.db data/rental_monitor.db
+uv run python configure.py
 ```
 
-Old v1 modules live under `legacy/` for the rollout window and are scheduled for deletion (Task 6.1).
+Every prompt shows your current value in `[brackets]`. Press Enter to keep, type something new to change.
 
-## Project structure
+- **Moved cities?** Type the new city + new neighbourhood. It re-geocodes and re-runs from there.
+- **Need a bigger budget?** Update min/max rent.
+- **Want 2BHK instead?** Change the bedroom answer.
+- **Too many alerts?** Increase the cycle hours.
+
+## The daily digest
+
+At 09:00 IST every day:
 
 ```
-rental-monitor/
-├── monitor.py              # long-running loop wrapper around run_once.main()
-├── run_once.py             # single cycle (used by hourly + digest workflows)
-├── config.py               # user-facing settings (city/budget/radius/...)
-├── pyproject.toml          # uv-managed deps
-├── src/
-│   ├── core/               # AsyncHttp, TokenBucket, Breaker, run_cycle engine
-│   ├── sources/            # SourceAdapter ABC + per-portal adapters + registry
-│   ├── pipeline/           # filter, dedup, rank, enrich, prune, digest
-│   ├── notifier/           # telegram sender, alert_v2 wrapper, digest
-│   ├── state/              # aiosqlite connect + migrations
-│   └── models.py           # pydantic Listing + RunStats
-├── scripts/                # refresh_fixtures.py, seed_v2_seen.py
-├── tests/                  # adapter + pipeline + unit tests + HTML fixtures
-└── legacy/                 # v1 modules quarantined until removal (Task 6.1)
+📋 Daily rental digest
+
+Top 5 by fit score (last 24h):
+• ₹10,000 — Adambakkam, Chennai · seen on 2
+   [99acres] score 87 · <link>
+...
+
+Source health (24h):
+✅ sulekha
+✅ 99acres
+⚠️ olx
+❌ magicbricks
 ```
 
-## CI workflows
+If a source has been silent for 3+ hours, the digest warns you — usually means the site started blocking us.
 
-- `.github/workflows/monitor.yml` — hourly cycle (`run_once.py`)
-- `.github/workflows/digest.yml`  — daily digest at 09:00 IST
+---
 
-Both restore `data/rental_monitor.db` from the `state` branch before running and write back on completion. **Don't push to the `state` branch by hand** — it's managed by the workflows and force-overwriting it will corrupt the live DB.
+## For developers
 
-## Getting API keys (free, no credit card)
+### Run locally
 
-| Service          | Link                       | Use                |
-|------------------|----------------------------|--------------------|
-| Telegram Bot     | Search @BotFather, /newbot | Notifications      |
-| Ola Maps         | maps.olacabs.com           | (Future) commute   |
-| OpenRouteService | openrouteservice.org       | (Future) walking   |
+```bash
+uv run python run_once.py          # one scan cycle
+uv run python monitor.py           # long-running loop
+uv run python run_once.py --digest # send digest now
+```
 
-`OLA_MAPS_API_KEY` and `ORS_API_KEY` are no-ops in v2.0.0 (the heuristic commute is used). Plumbed env vars stay for the v2.1 commute integration.
-
-## Tests
+### Tests
 
 ```bash
 uv run pytest -q
 ```
 
-All adapter tests run against checked-in HTML fixtures so no network calls fire in CI.
+All adapter tests use checked-in HTML fixtures — no live network calls in CI.
+
+### Manual config (skip the wizard)
+
+- `config.py` — areas, budget, radius, bedrooms, etc.
+- `.env` — Telegram secrets, location coordinates
+- `.github/workflows/monitor.yml` — cron schedule
+
+The wizard just writes these files for you.
+
+### CI workflows
+
+- `monitor.yml` — hourly cycle (wizard patches the interval)
+- `digest.yml` — daily digest at 09:00 IST
+
+Both restore `data/rental_monitor.db` from the `state` branch before running and write back on completion. **Don't push to the `state` branch by hand** — the workflows manage it.
+
+### Cutover from v1
+
+If you ran v1 before, seed the v2 dedup table so previously-seen listings don't re-alert:
+
+```bash
+uv run python scripts/seed_v2_seen.py legacy.db data/rental_monitor.db
+```
+
+### Project layout
+
+```
+rental-monitor/
+├── configure.py            # the setup wizard
+├── run_once.py             # one cycle (hourly cron + digest)
+├── monitor.py              # long-running loop
+├── config.py               # user settings (wizard writes this)
+├── src/
+│   ├── core/               # AsyncHttp, TokenBucket, Breaker, engine
+│   ├── sources/            # SourceAdapter ABC + per-portal adapters + registry
+│   ├── pipeline/           # filter, dedup, rank, enrich, prune, digest
+│   ├── notifier/           # Telegram sender, alert_v2, digest
+│   ├── state/              # aiosqlite connect + migrations
+│   └── models.py           # pydantic Listing + RunStats
+├── scripts/                # refresh_fixtures.py, seed_v2_seen.py
+├── tests/                  # adapter + pipeline + unit tests + HTML fixtures
+└── legacy/                 # v1 modules, kept until they're confirmed unneeded
+```
+
+### Working sources
+
+Sulekha · SquareYards · 99acres · MagicBricks · OLX · DuckDuckGo
+
+### Deferred sources
+
+CommonFloor, NoBroker, Housing.com — these need browser DevTools recon to discover current API endpoints (their public search URLs return empty results or require session-issued IDs we can't guess). PR welcome if you capture the network calls.
+
+### Getting API keys (free, no credit card)
+
+| Service          | Link                       | Use                |
+|------------------|----------------------------|--------------------|
+| Telegram Bot     | @BotFather, /newbot        | Notifications      |
+| Ola Maps         | maps.olacabs.com           | (Future) commute   |
+| OpenRouteService | openrouteservice.org       | (Future) walking   |
+
+`OLA_MAPS_API_KEY` and `ORS_API_KEY` are no-ops in v2.0.0 (heuristic commute is used). Env vars stay plumbed for the v2.1 commute integration.
