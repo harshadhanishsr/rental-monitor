@@ -81,7 +81,16 @@ FURNISHING = "any"
 
 # ── BUDGET ───────────────────────────────────────────────────
 MIN_RENT =  3_000   # ₹/month  — skip listings below this (likely fake/deposit)
-MAX_RENT = 20_000   # ₹/month  — skip listings above this
+
+# Per-type cap so 1BHK and 2BHK have different ceilings.
+MAX_RENT_BY_TYPE = {
+    "1bhk":   15_000,
+    "2bhk":   20_000,
+    "3bhk":   30_000,
+    "1rk":    10_000,
+    "studio": 10_000,
+}
+MAX_RENT = MAX_RENT_BY_TYPE.get(PROPERTY_TYPE.lower(), 15_000)
 
 # ── SCHEDULER ────────────────────────────────────────────────
 # How often to scan for new listings (seconds).
