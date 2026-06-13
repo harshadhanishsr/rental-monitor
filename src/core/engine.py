@@ -88,7 +88,10 @@ async def run_cycle(cfg: EngineConfig) -> RunStats:
                     continue
                 ok, _ = passes_distance_filter(l, OFFICE_LAT, OFFICE_LNG, MAX_RADIUS_KM)
                 if not ok:
-                    continue
+                    from config import ALWAYS_INCLUDE_AREAS
+                    addr = (l.address or "").lower()
+                    if not any(a in addr for a in ALWAYS_INCLUDE_AREAS):
+                        continue
                 stats.after_filter += 1
                 fp = fingerprint(l)
                 l = l.model_copy(update={"fingerprint": fp})

@@ -72,6 +72,10 @@ class MagicBricks(SourceAdapter):
             seo_url = it.get("seoURL") or it.get("url") or ""
             if seo_url and not seo_url.startswith("http"):
                 seo_url = f"https://www.magicbricks.com/{seo_url.lstrip('/')}"
+            # MagicBricks' seoURL uses '&' as the first separator instead of '?'.
+            # Fix it so the query string parses correctly in browsers.
+            if seo_url and "?" not in seo_url and "&" in seo_url:
+                seo_url = seo_url.replace("&", "?", 1)
             # Address: locality + city
             locality = it.get("lmtDName") or it.get("locSeoName") or ""
             city = it.get("ctName") or CITY

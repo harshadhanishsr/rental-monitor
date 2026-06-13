@@ -23,27 +23,20 @@ CITY = "Chennai"   # City name (used in scraper search queries)
 
 # Localities to actively search. Scrapers will target each of these.
 SEARCH_AREAS = [
-    # Original areas
-    "Pallikaranai",
-    "Medavakkam",
-    "Keelkattalai",
-    "Nanganallur",
-    "Adambakkam",
-    "Perumbakkam",
-    "Sholinganallur",
-    "Ullagaram",
-    "Chromepet",
-    "Pallavaram",
-    # New areas (user-requested)
-    "Thoraipakkam",
     "Kovilambakkam",
+    "Madipakkam",
+    "Nanganallur",
     "Velachery",
+    "Thoraipakkam",
+    "Chromepet",
+    "Guindy",
+    "Ram Nagar",
+    "Ram Nagar South",
+    "Sadasiva Nagar",
+    "Tirusulam",
+    "MMTC Colony",
+    "Alandur",
     "St Thomas Mount",
-    "Pammal",
-    "Pozhichalur",
-    "Kolapakkam",
-    "Sembakkam",
-    "Mudichur",
 ]
 
 PRIORITY_LOCALITIES = {
@@ -57,7 +50,11 @@ PRIORITY_LOCALITIES = {
 
 # ── SEARCH RADIUS ─────────────────────────────────────────────
 # Only listings within this distance from OFFICE_LAT/LNG are alerted.
-MAX_RADIUS_KM = 12.0
+MAX_RADIUS_KM = 8.0
+
+# Localities allowed past MAX_RADIUS_KM regardless of distance.
+# Matched against listing.address (case-insensitive substring).
+ALWAYS_INCLUDE_AREAS = {"velachery", "guindy", "thoraipakkam"}
 
 # Zone thresholds (km) — used in alert messages
 ZONE_SUPER_CLOSE_KM = 2.0    # ≤ this → "SUPER CLOSE"
@@ -84,7 +81,7 @@ FURNISHING = "any"
 
 # ── BUDGET ───────────────────────────────────────────────────
 MIN_RENT =  3_000   # ₹/month  — skip listings below this (likely fake/deposit)
-MAX_RENT = 15_000   # ₹/month  — skip listings above this
+MAX_RENT = 20_000   # ₹/month  — skip listings above this
 
 # ── SCHEDULER ────────────────────────────────────────────────
 # How often to scan for new listings (seconds).
