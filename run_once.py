@@ -44,7 +44,7 @@ def main() -> int:
         sources=all_sources(),
         deadline_s=90,
         alert_fn=alert,
-        proxy=os.environ.get("PROXY_URL"),
+        proxy=os.environ.get("PROXY_URL") or None,
     )
     asyncio.run(run_cycle(cfg))
     return 0
