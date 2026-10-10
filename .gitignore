@@ -1,0 +1,26 @@
+# Secrets
+.env
+.env.local
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Data / DB
+data/
+*.db
+*.sqlite
+*.db-wal
+*.db-shm
+
+# Debug scripts
+debug_*.py
+
+# OS
+.DS_Store
+Thumbs.db
