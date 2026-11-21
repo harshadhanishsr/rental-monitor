@@ -1,0 +1,53 @@
+name: Rental Monitor
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: rental-monitor
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - run: uv sync
+      - name: Restore state branch
+        run: |
+          git config user.name  "rental-monitor-bot"
+          git config user.email "bot@users.noreply.github.com"
+          uv run python -c "from pathlib import Path; from src.state.branch_sync import restore; restore(Path('data/rental_monitor.db'))"
+      - name: Run cycle
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          OLA_MAPS_API_KEY:   ${{ secrets.OLA_MAPS_API_KEY }}
+          ORS_API_KEY:        ${{ secrets.ORS_API_KEY }}
+          OFFICE_LAT:         ${{ secrets.OFFICE_LAT }}
+          OFFICE_LNG:         ${{ secrets.OFFICE_LNG }}
+          LLM_API_KEY:        ${{ secrets.LLM_API_KEY }}
+          PROXY_URL:          ${{ secrets.PROXY_URL }}
+          DB_PATH:            data/rental_monitor.db
+        run: uv run python run_once.py
+      - name: Persist state
+        if: always()
+        run: |
+          uv run python -c "import datetime; from pathlib import Path; from src.state.branch_sync import commit_and_push; commit_and_push(Path('data/rental_monitor.db'), f\"state: {datetime.datetime.now(datetime.UTC).isoformat()}\")"
+      - name: Upload state artifact (fallback)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: state-db-${{ github.run_id }}
+          path: data/rental_monitor.db
+          retention-days: 7
+          if-no-files-found: ignore
